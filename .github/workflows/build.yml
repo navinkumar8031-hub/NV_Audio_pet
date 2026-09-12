@@ -28,7 +28,7 @@ jobs:
 
       - name: Recreate Android Project Files
         run: |
-          flutter create --platforms=android --org com.nvstudio .
+          flutter create --platforms=android --org com.nvstudio --project-name nv_audio_pet .
 
       - name: Install Dependencies
         run: flutter pub get
