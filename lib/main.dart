@@ -1,24 +1,18 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web_socket_channel/status.dart' as status;
 
-// =========================================================================
-// 1. ROBUST ESP32 WEBSOCKET ENGINE (TIMEOUT, AUTO-RETRY & MULTI-PORT SUPPORT)
-// =========================================================================
+// ==========================================
+// 1. WEBSOCKET & THEME ENGINE (ORIGINAL PROVEN CODE)
+// ==========================================
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
   bool isConnected = false;
-  bool isConnecting = false;
   String espIp = "192.168.4.1";
-  Timer? _reconnectTimer;
-  Timer? _pingTimer;
 
   Color neonAccent = const Color(0xFF00F2FE);
 
@@ -51,12 +45,12 @@ class DspWebSocketService extends ChangeNotifier {
   Color get activeCardBg => isNightModeActive ? const Color(0xFF080808) : const Color(0xFF101622);
 
   static const List<Color> availableThemes = [
-    Color(0xFF00F2FE),
-    Color(0xFF00E676),
-    Color(0xFFFFB300),
-    Color(0xFFFF007F),
-    Color(0xFFD500F9),
-    Color(0xFFFF3D00),
+    Color(0xFF00F2FE), // Cyber Cyan
+    Color(0xFF00E676), // Neon Green
+    Color(0xFFFFB300), // Electric Amber
+    Color(0xFFFF007F), // Hot Magenta
+    Color(0xFFD500F9), // Plasma Violet
+    Color(0xFFFF3D00), // Flame Orange
   ];
 
   int volume = 4;
@@ -109,7 +103,7 @@ class DspWebSocketService extends ChangeNotifier {
     espIp = newIp.trim();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('saved_esp_ip', espIp);
-    _cleanupSocket();
+    _channel?.sink.close();
     connect(espIp);
   }
 
@@ -143,110 +137,42 @@ class DspWebSocketService extends ChangeNotifier {
     await prefs.setInt('night_end_m', endM);
   }
 
-  void _cleanupSocket() {
-    _pingTimer?.cancel();
-    _reconnectTimer?.cancel();
-    try {
-      _channel?.sink.close(status.normalClosure);
-    } catch (_) {}
-    _channel = null;
-    isConnected = false;
-    isConnecting = false;
-    notifyListeners();
-  }
-
-  Future<void> connect(String ip) async {
-    if (isConnecting) return;
-    _cleanupSocket();
-    isConnecting = true;
+  void connect(String ip) {
     espIp = ip.trim();
-    notifyListeners();
-
-    String host = espIp;
-    if (host.startsWith("http://")) host = host.replaceFirst("http://", "");
-    if (host.startsWith("ws://")) host = host.replaceFirst("ws://", "");
-    if (host.endsWith("/")) host = host.substring(0, host.length - 1);
-
-    final primaryUri = Uri.parse('ws://$host/ws');
-
     try {
-      final ws = await WebSocket.connect(primaryUri.toString()).timeout(const Duration(seconds: 4));
-      _channel = IOWebSocketChannel(ws);
+      _channel = WebSocketChannel.connect(Uri.parse('ws://$espIp/ws'));
       isConnected = true;
-      isConnecting = false;
       notifyListeners();
 
       _channel!.stream.listen(
         (data) => _parseSync(data.toString()),
         onDone: () {
           isConnected = false;
-          isConnecting = false;
           notifyListeners();
-          _scheduleReconnect();
+          _reconnect();
         },
         onError: (_) {
           isConnected = false;
-          isConnecting = false;
           notifyListeners();
-          _scheduleReconnect();
+          _reconnect();
         },
-        cancelOnError: true,
       );
-
-      _pingTimer?.cancel();
-      _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
-        sendCommand("PING");
-      });
-
       sendCommand("REQ_SYNC");
     } catch (_) {
-      try {
-        final fallbackUri = Uri.parse('ws://$host:81');
-        final wsFallback = await WebSocket.connect(fallbackUri.toString()).timeout(const Duration(seconds: 3));
-        _channel = IOWebSocketChannel(wsFallback);
-        isConnected = true;
-        isConnecting = false;
-        notifyListeners();
-
-        _channel!.stream.listen(
-          (data) => _parseSync(data.toString()),
-          onDone: () {
-            isConnected = false;
-            isConnecting = false;
-            notifyListeners();
-            _scheduleReconnect();
-          },
-          onError: (_) {
-            isConnected = false;
-            isConnecting = false;
-            notifyListeners();
-            _scheduleReconnect();
-          },
-        );
-        sendCommand("REQ_SYNC");
-      } catch (e) {
-        isConnected = false;
-        isConnecting = false;
-        notifyListeners();
-        _scheduleReconnect();
-      }
+      isConnected = false;
+      notifyListeners();
     }
   }
 
-  void _scheduleReconnect() {
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 4), () {
-      if (!isConnected && !isConnecting) {
-        connect(espIp);
-      }
+  void _reconnect() {
+    Timer(const Duration(seconds: 3), () {
+      if (!isConnected) connect(espIp);
     });
   }
 
   void sendCommand(String cmd) {
     if (isConnected && _channel != null) {
-      try {
-        _channel!.sink.add(cmd);
-      } catch (_) {}
+      _channel!.sink.add(cmd);
     }
   }
 
@@ -327,7 +253,6 @@ class DspWebSocketService extends ChangeNotifier {
 
   @override
   void dispose() {
-    _cleanupSocket();
     _scheduleCheckerTimer?.cancel();
     _localCountDownTimer?.cancel();
     super.dispose();
@@ -413,40 +338,18 @@ class _StudioScreenState extends State<StudioScreen> {
             "ESP32 IP SETTINGS",
             style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.5),
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: controller,
-                style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  hintText: "e.g. 192.168.4.1",
-                  hintStyle: const TextStyle(color: Color(0xFF546E7A)),
-                  filled: true,
-                  fillColor: const Color(0xFF0A0E17),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1C2638))),
-                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                dsp.isConnected
-                    ? "STATUS: CONNECTED (SYNC ACTIVE)"
-                    : dsp.isConnecting
-                        ? "STATUS: CONNECTING..."
-                        : "STATUS: DISCONNECTED (TAP CONNECT)",
-                style: TextStyle(
-                  color: dsp.isConnected
-                      ? const Color(0xFF00E676)
-                      : dsp.isConnecting
-                          ? Colors.amber
-                          : Colors.redAccent,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
+          content: TextField(
+            controller: controller,
+            style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              hintText: "e.g. 192.168.4.1",
+              hintStyle: const TextStyle(color: Color(0xFF546E7A)),
+              filled: true,
+              fillColor: const Color(0xFF0A0E17),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1C2638))),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
+            ),
           ),
           actions: [
             TextButton(
@@ -774,11 +677,7 @@ class _StudioScreenState extends State<StudioScreen> {
                               width: 8,
                               height: 8,
                               decoration: BoxDecoration(
-                                color: dsp.isConnected
-                                    ? const Color(0xFF00E676)
-                                    : dsp.isConnecting
-                                        ? Colors.amber
-                                        : Colors.red,
+                                color: dsp.isConnected ? const Color(0xFF00E676) : Colors.red,
                                 shape: BoxShape.circle,
                               ),
                             ),
@@ -837,13 +736,13 @@ class _StudioScreenState extends State<StudioScreen> {
                   child: Center(
                     child: SingleChildScrollView(
                       physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const SizedBox(height: 70),
 
-                          // 1. MASTER OUTPUT GAIN (ROBOT PATROL ROOF)
+                          // 1. MASTER OUTPUT GAIN
                           SizedBox(
                             width: double.infinity,
                             child: _glassCard(
@@ -1114,7 +1013,7 @@ class _StudioScreenState extends State<StudioScreen> {
               ],
             ),
 
-            // --- 2. MASTER CARD ROOF PET ENGINE (WALK & DANCE ONLY) ---
+            // --- 2. CYBER PET ON MASTER VOLUME CARD ROOF ---
             Positioned.fill(
               child: IgnorePointer(
                 ignoring: false,
@@ -1176,7 +1075,7 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. CONTINUOUS FLUID CYBER-PET ROOF ENGINE (NATURAL SPEED & NO FREEZE)
+// 4. SLOW-PACED FLUID CYBER-PET ROOF ENGINE (EASILY CATCHABLE ACTIONS)
 // =========================================================================
 enum PetBehaviorState { idle, walking, dancing }
 
@@ -1214,12 +1113,11 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
     });
   }
 
-  // --- SINGLE CONTINUOUS TICKER (NO LAG, NO ATTAKNA) ---
   void _startContinuousMasterLoop() {
     _loopTicker?.cancel();
 
-    // 160ms = Perfect natural 2D game walking speed (lagbhag 6 FPS)
-    _loopTicker = Timer.periodic(const Duration(milliseconds: 160), (timer) {
+    // 240ms per frame = Relaxed, easily visible action (~4.1 FPS)
+    _loopTicker = Timer.periodic(const Duration(milliseconds: 240), (timer) {
       if (!mounted || _isDragging) return;
 
       if (_state == PetBehaviorState.walking) {
@@ -1233,17 +1131,16 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
         }
 
         setState(() {
-          // 12-Frame clean cycle
           _currentWalkFrame = (_currentWalkFrame % 12) + 1;
-          // Step distance adjusted to 2.8px per frame for perfect ground sync
+          // Stride reduced to 1.8px for steady, natural walking
           _currentPos = Offset(
-            (_currentPos.dx + (_facingDirection * 2.8)).clamp(-110.0, 110.0),
+            (_currentPos.dx + (_facingDirection * 1.8)).clamp(-110.0, 110.0),
             -255.0,
           );
         });
 
-        // 36 ticks chalne ke baad center ke paas aakar dance sequence
-        if (_cycleCounter >= 36 && _currentPos.dx.abs() < 40) {
+        // 24 ticks (lagbhag 5.7 seconds) aaram se patrol karne ke baad dance
+        if (_cycleCounter >= 24 && _currentPos.dx.abs() < 50) {
           _cycleCounter = 0;
           setState(() {
             _state = PetBehaviorState.dancing;
@@ -1255,7 +1152,7 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
           if (_currentDanceFrame < 11) {
             _currentDanceFrame++;
           } else {
-            // Dance khatam hote hi BINA ATKE seedhe wapas chalna shuru karega
+            // Dance routine complete -> Resume slow walk
             _state = PetBehaviorState.walking;
             _currentWalkFrame = 1;
             _facingDirection = _rng.nextBool() ? 1.0 : -1.0;
@@ -1267,7 +1164,6 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
 
   void _onTapPet() {
     if (_isDragging) return;
-    // Tap karne par turant dance groove start hoga
     setState(() {
       _state = PetBehaviorState.dancing;
       _currentDanceFrame = 1;
@@ -1333,7 +1229,6 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
     );
   }
 }
-
 // ==========================================================
 // 5. INDIVIDUAL POP-ZOOM VERTICAL FADER
 // ==========================================================
