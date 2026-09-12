@@ -26,6 +26,10 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Recreate Android Project Files
+        run: |
+          flutter create --platforms=android --org com.nvstudio .
+
       - name: Install Dependencies
         run: flutter pub get
 
