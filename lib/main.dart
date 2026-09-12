@@ -1176,7 +1176,7 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. MASTER CARD ROOF CYBER-PET ENGINE: DISCRETE WALK & DANCE
+// 4. CONTINUOUS FLUID CYBER-PET ROOF ENGINE (NATURAL SPEED & NO FREEZE)
 // =========================================================================
 enum PetBehaviorState { idle, walking, dancing }
 
@@ -1195,125 +1195,83 @@ class CyberPetMasterRoofEngine extends StatefulWidget {
 class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
   final Random _rng = Random();
 
-  // Y = -255.0 points directly on top of Master Volume Card
   Offset _currentPos = const Offset(0.0, -255.0);
 
-  PetBehaviorState _state = PetBehaviorState.idle;
+  PetBehaviorState _state = PetBehaviorState.walking;
   int _currentWalkFrame = 1;  // walk_1 to walk_12
   int _currentDanceFrame = 1; // dance_1 to dance_11
   double _facingDirection = 1.0;
-  Timer? _behaviorTimer;
-  Timer? _stepTickerTimer;
+  Timer? _loopTicker;
   bool _isDragging = false;
+
+  int _cycleCounter = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scheduleNextAction();
+      _startContinuousMasterLoop();
     });
   }
 
-  void _scheduleNextAction() {
-    if (!mounted || _isDragging) return;
+  // --- SINGLE CONTINUOUS TICKER (NO LAG, NO ATTAKNA) ---
+  void _startContinuousMasterLoop() {
+    _loopTicker?.cancel();
 
-    _behaviorTimer?.cancel();
-    // 1 to 2.5 seconds pause between actions
-    _behaviorTimer = Timer(Duration(milliseconds: 1000 + _rng.nextInt(1500)), () {
+    // 160ms = Perfect natural 2D game walking speed (lagbhag 6 FPS)
+    _loopTicker = Timer.periodic(const Duration(milliseconds: 160), (timer) {
       if (!mounted || _isDragging) return;
 
-      // 50% chance walk, 50% chance dance
-      if (_rng.nextBool()) {
-        _startCardPatrolWalk();
-      } else {
-        _startCardDanceGroove();
-      }
-    });
-  }
+      if (_state == PetBehaviorState.walking) {
+        _cycleCounter++;
 
-  // --- 1. SMOOTH DISCRETE WALKING ALONG MASTER CARD ROOF ---
-  void _startCardPatrolWalk() {
-    if (!mounted) return;
+        // Edge Detection on Master Card: Left (-105px) and Right (105px)
+        if (_currentPos.dx >= 105.0) {
+          _facingDirection = -1.0;
+        } else if (_currentPos.dx <= -105.0) {
+          _facingDirection = 1.0;
+        }
 
-    // Boundary bounce on the Master Card roof (-110px to +110px)
-    if (_currentPos.dx >= 100.0) {
-      _facingDirection = -1.0;
-    } else if (_currentPos.dx <= -100.0) {
-      _facingDirection = 1.0;
-    } else {
-      _facingDirection = _rng.nextBool() ? 1.0 : -1.0;
-    }
+        setState(() {
+          // 12-Frame clean cycle
+          _currentWalkFrame = (_currentWalkFrame % 12) + 1;
+          // Step distance adjusted to 2.8px per frame for perfect ground sync
+          _currentPos = Offset(
+            (_currentPos.dx + (_facingDirection * 2.8)).clamp(-110.0, 110.0),
+            -255.0,
+          );
+        });
 
-    setState(() {
-      _state = PetBehaviorState.walking;
-      _currentWalkFrame = 1;
-    });
-
-    int stepCount = 0;
-    // Exactly 1 full 12-frame walk cycle per patrol burst
-    const int totalSteps = 12;
-    const double stridePx = 3.5; // Fixed physical ground movement per step
-
-    _stepTickerTimer?.cancel();
-    _stepTickerTimer = Timer.periodic(const Duration(milliseconds: 115), (timer) {
-      if (!mounted || _isDragging) {
-        timer.cancel();
-        return;
-      }
-
-      stepCount++;
-      setState(() {
-        _currentWalkFrame = (_currentWalkFrame % 12) + 1;
-        _currentPos = Offset(
-          (_currentPos.dx + (_facingDirection * stridePx)).clamp(-115.0, 115.0),
-          -255.0, // Strictly locked to card roof baseline
-        );
-      });
-
-      if (stepCount >= totalSteps) {
-        timer.cancel();
-        setState(() => _state = PetBehaviorState.idle);
-        _scheduleNextAction();
-      }
-    });
-  }
-
-  // --- 2. RHYTHMIC DANCE ROUTINE ON MASTER CARD ---
-  void _startCardDanceGroove() {
-    if (!mounted) return;
-
-    setState(() {
-      _state = PetBehaviorState.dancing;
-      _currentDanceFrame = 1;
-    });
-
-    int danceStep = 0;
-    _stepTickerTimer?.cancel();
-    // 145ms per dance pose for natural tempo
-    _stepTickerTimer = Timer.periodic(const Duration(milliseconds: 145), (timer) {
-      if (!mounted || _isDragging) {
-        timer.cancel();
-        return;
-      }
-
-      danceStep++;
-      if (danceStep <= 11) {
-        setState(() => _currentDanceFrame = danceStep);
-      } else {
-        timer.cancel();
-        // Return to neutral idle pose
-        setState(() => _state = PetBehaviorState.idle);
-        _scheduleNextAction();
+        // 36 ticks chalne ke baad center ke paas aakar dance sequence
+        if (_cycleCounter >= 36 && _currentPos.dx.abs() < 40) {
+          _cycleCounter = 0;
+          setState(() {
+            _state = PetBehaviorState.dancing;
+            _currentDanceFrame = 1;
+          });
+        }
+      } else if (_state == PetBehaviorState.dancing) {
+        setState(() {
+          if (_currentDanceFrame < 11) {
+            _currentDanceFrame++;
+          } else {
+            // Dance khatam hote hi BINA ATKE seedhe wapas chalna shuru karega
+            _state = PetBehaviorState.walking;
+            _currentWalkFrame = 1;
+            _facingDirection = _rng.nextBool() ? 1.0 : -1.0;
+          }
+        });
       }
     });
   }
 
   void _onTapPet() {
-    _behaviorTimer?.cancel();
-    _stepTickerTimer?.cancel();
-
-    // User tap immediately triggers lively dance routine
-    _startCardDanceGroove();
+    if (_isDragging) return;
+    // Tap karne par turant dance groove start hoga
+    setState(() {
+      _state = PetBehaviorState.dancing;
+      _currentDanceFrame = 1;
+    });
   }
 
   String _getCurrentFrameAsset() {
@@ -1323,14 +1281,13 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
       case PetBehaviorState.dancing:
         return 'assets/pet/dance_$_currentDanceFrame.png';
       case PetBehaviorState.idle:
-        return 'assets/pet/walk_1.png'; // Neutral baseline pose
+        return 'assets/pet/walk_1.png';
     }
   }
 
   @override
   void dispose() {
-    _behaviorTimer?.cancel();
-    _stepTickerTimer?.cancel();
+    _loopTicker?.cancel();
     super.dispose();
   }
 
@@ -1346,8 +1303,6 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
             behavior: HitTestBehavior.opaque,
             onPanStart: (_) {
               _isDragging = true;
-              _behaviorTimer?.cancel();
-              _stepTickerTimer?.cancel();
               setState(() => _state = PetBehaviorState.idle);
             },
             onPanUpdate: (details) {
@@ -1357,11 +1312,10 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
             },
             onPanEnd: (_) {
               _isDragging = false;
-              // Snap back smoothly to Master Card roof baseline if dropped
               setState(() {
-                _currentPos = Offset(_currentPos.dx.clamp(-115.0, 115.0), -255.0);
+                _currentPos = Offset(_currentPos.dx.clamp(-105.0, 105.0), -255.0);
+                _state = PetBehaviorState.walking;
               });
-              _scheduleNextAction();
             },
             onTap: _onTapPet,
             child: SizedBox(
