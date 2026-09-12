@@ -5,6 +5,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
 
@@ -50,12 +51,12 @@ class DspWebSocketService extends ChangeNotifier {
   Color get activeCardBg => isNightModeActive ? const Color(0xFF080808) : const Color(0xFF101622);
 
   static const List<Color> availableThemes = [
-    Color(0xFF00F2FE), // Cyber Cyan
-    Color(0xFF00E676), // Neon Green
-    Color(0xFFFFB300), // Electric Amber
-    Color(0xFFFF007F), // Hot Magenta
-    Color(0xFFD500F9), // Plasma Violet
-    Color(0xFFFF3D00), // Flame Orange
+    Color(0xFF00F2FE),
+    Color(0xFF00E676),
+    Color(0xFFFFB300),
+    Color(0xFFFF007F),
+    Color(0xFFD500F9),
+    Color(0xFFFF3D00),
   ];
 
   int volume = 4;
@@ -161,18 +162,16 @@ class DspWebSocketService extends ChangeNotifier {
     espIp = ip.trim();
     notifyListeners();
 
-    // Clean address format
     String host = espIp;
     if (host.startsWith("http://")) host = host.replaceFirst("http://", "");
     if (host.startsWith("ws://")) host = host.replaceFirst("ws://", "");
     if (host.endsWith("/")) host = host.substring(0, host.length - 1);
 
-    // Primary route ws://IP/ws or fallback ws://IP:81
     final primaryUri = Uri.parse('ws://$host/ws');
 
     try {
       final ws = await WebSocket.connect(primaryUri.toString()).timeout(const Duration(seconds: 4));
-      _channel = WebSocketChannel.from(ws);
+      _channel = IOWebSocketChannel(ws);
       isConnected = true;
       isConnecting = false;
       notifyListeners();
@@ -194,7 +193,6 @@ class DspWebSocketService extends ChangeNotifier {
         cancelOnError: true,
       );
 
-      // Heartbeat ping every 10 seconds
       _pingTimer?.cancel();
       _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
         sendCommand("PING");
@@ -202,11 +200,10 @@ class DspWebSocketService extends ChangeNotifier {
 
       sendCommand("REQ_SYNC");
     } catch (_) {
-      // Fallback to direct port 81 (Common for ESPAsyncWebServer or WebSocketsServer)
       try {
         final fallbackUri = Uri.parse('ws://$host:81');
         final wsFallback = await WebSocket.connect(fallbackUri.toString()).timeout(const Duration(seconds: 3));
-        _channel = WebSocketChannel.from(wsFallback);
+        _channel = IOWebSocketChannel(wsFallback);
         isConnected = true;
         isConnecting = false;
         notifyListeners();
@@ -1230,8 +1227,8 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
 
   // Sprite Frames Tracker
   PetBehaviorState _state = PetBehaviorState.idle;
-  int _currentWalkFrame = 1;  // 1 to 6
-  int _currentDanceFrame = 1; // 1 to 11
+  int _currentWalkFrame = 1;
+  int _currentDanceFrame = 1;
   double _facingDirection = 1.0;
   Timer? _decisionTimer;
   Timer? _restTimer;
@@ -1239,13 +1236,13 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
 
   List<Offset> _getLedgeLocations(Size s) {
     return [
-      const Offset(0.0, -255.0),           // Master Card Roof Center
-      const Offset(-105.0, -255.0),        // Master Card Roof Left
-      const Offset(105.0, -255.0),         // Master Card Roof Right
-      const Offset(-145.0, -110.0),        // Master Left Ledge (Sitting spot)
-      const Offset(145.0, -110.0),         // Master Right Ledge (Sitting spot)
-      Offset(-s.width * 0.24, 80.0),       // Subwoofer Roof
-      Offset(s.width * 0.24, 80.0),        // Sleep Timer Roof
+      const Offset(0.0, -255.0),
+      const Offset(-105.0, -255.0),
+      const Offset(105.0, -255.0),
+      const Offset(-145.0, -110.0),
+      const Offset(145.0, -110.0),
+      Offset(-s.width * 0.24, 80.0),
+      Offset(s.width * 0.24, 80.0),
     ];
   }
 
@@ -1253,13 +1250,11 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
   void initState() {
     super.initState();
 
-    // 1. Walking Animation Controller (walk_1.png to walk_6.png)
     _walkPhysicsCtrl = AnimationController(vsync: this);
     _walkPhysicsCtrl.addListener(() {
       final t = _walkPhysicsCtrl.value;
       final curX = lerpDouble(_walkStartPos.dx, _walkEndPos.dx, t)!;
       final bounceY = -sin(t * pi * 3).abs() * 4.0;
-
       final int f = (t * 6).floor().clamp(0, 5) + 1;
 
       setState(() {
@@ -1275,7 +1270,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       }
     });
 
-    // 2. Dance Controller (dance_1.png to dance_11.png)
     _danceLoopCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
     _danceLoopCtrl.addListener(() {
       final t = _danceLoopCtrl.value;
@@ -1285,14 +1279,12 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       });
     });
 
-    // When dance completes -> PET GETS TIRED & SITS DOWN TO REST!
     _danceLoopCtrl.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
         _triggerTiredRestMode();
       }
     });
 
-    // 3. Leap Controller
     _leapCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
     _leapCtrl.addListener(() {
       final t = _leapCtrl.value;
@@ -1311,7 +1303,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       }
     });
 
-    // 4. Portal & Laser Controllers
     _portalCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 850));
     _laserPulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 220))..repeat(reverse: true);
 
@@ -1347,14 +1338,12 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     });
   }
 
-  // --- TIRED PET RESTS IN pet_sit.png ---
   void _triggerTiredRestMode() {
     if (!mounted) return;
     setState(() {
       _state = PetBehaviorState.restingSit;
     });
 
-    // Rest for 3.5 to 5 seconds
     _restTimer?.cancel();
     _restTimer = Timer(Duration(milliseconds: 3500 + _rng.nextInt(1500)), () {
       if (mounted && !_isDragging) {
@@ -1364,7 +1353,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     });
   }
 
-  // --- CONTINUOUS 6-FRAME WALK ---
   void _triggerContinuousWalk() {
     if (!mounted) return;
 
@@ -1392,7 +1380,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     _walkPhysicsCtrl.forward(from: 0.0);
   }
 
-  // --- ENERGETIC 11-FRAME DANCE LOOP ---
   void _triggerGroovyDance() {
     if (!mounted) return;
 
@@ -1404,7 +1391,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     _danceLoopCtrl.forward(from: 0.0);
   }
 
-  // --- ACTIVE LASER BLAST ---
   void _triggerLaserBlast() {
     if (!mounted) return;
 
@@ -1434,7 +1420,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     });
   }
 
-  // --- TRAVEL TO ANOTHER CARD ---
   void _triggerTravelToAnotherCard() {
     if (!mounted) return;
     final size = MediaQuery.of(context).size;
@@ -1524,7 +1509,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     setState(() => _isShootingLaser = false);
 
     if (_state == PetBehaviorState.restingSit) {
-      // Poke wakes him up to dance
       _triggerGroovyDance();
       return;
     }
@@ -1536,7 +1520,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     }
   }
 
-  // Exact Asset Link
   String _getCurrentFrameAsset() {
     switch (_state) {
       case PetBehaviorState.walking:
@@ -1544,7 +1527,7 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       case PetBehaviorState.dancing:
         return 'assets/pet/dance_$_currentDanceFrame.png';
       case PetBehaviorState.restingSit:
-        return 'assets/pet/pet_sit.png'; // Resting pose after dance
+        return 'assets/pet/pet_sit.png';
       case PetBehaviorState.shootingLaser:
         return 'assets/pet/dance_10.png';
       case PetBehaviorState.leaping:
