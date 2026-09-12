@@ -1182,56 +1182,31 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. MASTER CYBER-PET ENGINE: WALK + DANCE + TIRED PET_SIT REST + PORTAL
+// 4. SHIMEJI-STYLE DISCRETE STEP ENGINE (WALK 1..12 + DANCE 1..11 + REST)
 // =========================================================================
-enum PetBehaviorState { idle, walking, dancing, restingSit, shootingLaser, leaping }
-
-class CyberPetMasterEngine extends StatefulWidget {
-  final Color accentColor;
-  final VoidCallback onTamperSubwoofer;
-
-  const CyberPetMasterEngine({
-    super.key,
-    required this.accentColor,
-    required this.onTamperSubwoofer,
-  });
-
-  @override
-  State<CyberPetMasterEngine> createState() => _CyberPetMasterEngineState();
-}
-
 class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with TickerProviderStateMixin {
-  late AnimationController _walkPhysicsCtrl;
-  late AnimationController _danceLoopCtrl;
   late AnimationController _leapCtrl;
   late AnimationController _portalCtrl;
   late AnimationController _laserPulseCtrl;
   final Random _rng = Random();
 
   Offset _currentPos = const Offset(0.0, -255.0);
-  Offset _walkStartPos = const Offset(0.0, -255.0);
-  Offset _walkEndPos = const Offset(0.0, -255.0);
-
-  // Leap State
   Offset _leapStartPos = const Offset(0.0, -255.0);
   Offset _leapEndPos = const Offset(0.0, -255.0);
 
-  // Laser State
   bool _isShootingLaser = false;
   Offset? _laserTargetPoint;
 
-  // Portal State
   Offset? _portalPos;
   bool _isPortalOpen = false;
   double _petScale = 1.0;
 
-  // Sprite Frames Tracker
   PetBehaviorState _state = PetBehaviorState.idle;
-  int _currentWalkFrame = 1;
-  int _currentDanceFrame = 1;
+  int _currentWalkFrame = 1;  // 1 to 12
+  int _currentDanceFrame = 1; // 1 to 11
   double _facingDirection = 1.0;
   Timer? _decisionTimer;
-  Timer? _restTimer;
+  Timer? _stepTickerTimer;
   bool _isDragging = false;
 
   List<Offset> _getLedgeLocations(Size s) {
@@ -1250,65 +1225,22 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
   void initState() {
     super.initState();
 
-    _walkPhysicsCtrl = AnimationController(vsync: this);
-    _walkPhysicsCtrl.addListener(() {
-      final t = _walkPhysicsCtrl.value;
-      final curX = lerpDouble(_walkStartPos.dx, _walkEndPos.dx, t)!;
-      final bounceY = -sin(t * pi * 3).abs() * 4.0;
-      final int f = (t * 6).floor().clamp(0, 5) + 1;
-
-      setState(() {
-        _currentPos = Offset(curX, _walkStartPos.dy + bounceY);
-        _currentWalkFrame = f;
-      });
-    });
-
-    _walkPhysicsCtrl.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        setState(() => _state = PetBehaviorState.idle);
-        _scheduleNextBehavior();
-      }
-    });
-
-    _danceLoopCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
-    _danceLoopCtrl.addListener(() {
-      final t = _danceLoopCtrl.value;
-      final int f = (t * 11).floor().clamp(0, 10) + 1;
-      setState(() {
-        _currentDanceFrame = f;
-      });
-    });
-
-    _danceLoopCtrl.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _triggerTiredRestMode();
-      }
-    });
-
     _leapCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
     _leapCtrl.addListener(() {
       final t = _leapCtrl.value;
       final curX = lerpDouble(_leapStartPos.dx, _leapEndPos.dx, t)!;
       final jumpArc = -sin(t * pi) * 75.0;
       final curY = lerpDouble(_leapStartPos.dy, _leapEndPos.dy, t)! + jumpArc;
-
-      setState(() {
-        _currentPos = Offset(curX, curY);
-      });
+      setState(() => _currentPos = Offset(curX, curY));
     });
-
-    _leapCtrl.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _onSuperheroLanding();
-      }
+    _leapCtrl.addStatusListener((s) {
+      if (s == AnimationStatus.completed) _onSuperheroLanding();
     });
 
     _portalCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 850));
     _laserPulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 220))..repeat(reverse: true);
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scheduleNextBehavior();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleNextBehavior());
   }
 
   Offset get _handWorldBlasterPos {
@@ -1321,16 +1253,15 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     if (!mounted || _isDragging || _isPortalOpen || _state == PetBehaviorState.restingSit) return;
 
     _decisionTimer?.cancel();
-    _decisionTimer = Timer(Duration(milliseconds: 900 + _rng.nextInt(1500)), () {
+    _decisionTimer = Timer(Duration(milliseconds: 800 + _rng.nextInt(1400)), () {
       if (!mounted || _isDragging || _state == PetBehaviorState.restingSit) return;
 
       final roll = _rng.nextInt(10);
-
-      if (roll < 3) {
-        _triggerContinuousWalk();
-      } else if (roll < 6) {
-        _triggerGroovyDance();
-      } else if (roll < 8) {
+      if (roll < 4) {
+        _startShimejiWalk();
+      } else if (roll < 7) {
+        _startShimejiDance();
+      } else if (roll < 9) {
         _triggerLaserBlast();
       } else {
         _triggerTravelToAnotherCard();
@@ -1338,49 +1269,46 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     });
   }
 
-  void _triggerTiredRestMode() {
-    if (!mounted) return;
-    setState(() {
-      _state = PetBehaviorState.restingSit;
-    });
-
-    _restTimer?.cancel();
-    _restTimer = Timer(Duration(milliseconds: 3500 + _rng.nextInt(1500)), () {
-      if (mounted && !_isDragging) {
-        setState(() => _state = PetBehaviorState.idle);
-        _scheduleNextBehavior();
-      }
-    });
-  }
-
-  void _triggerContinuousWalk() {
+  // --- FULL 12-FRAME WALKING CYCLE ---
+  void _startShimejiWalk() {
     if (!mounted) return;
 
-    final double stepDistance = 28.0 + _rng.nextInt(32);
-    double targetX = _currentPos.dx + (_facingDirection * stepDistance);
-
-    if (targetX > 115.0) {
-      targetX = _currentPos.dx - stepDistance;
-      _facingDirection = -1.0;
-    } else if (targetX < -115.0) {
-      targetX = _currentPos.dx + stepDistance;
-      _facingDirection = 1.0;
-    }
-
-    _walkStartPos = _currentPos;
-    _walkEndPos = Offset(targetX, _currentPos.dy);
+    if (_currentPos.dx > 110.0) _facingDirection = -1.0;
+    if (_currentPos.dx < -110.0) _facingDirection = 1.0;
 
     setState(() {
       _state = PetBehaviorState.walking;
       _currentWalkFrame = 1;
     });
 
-    final durationMs = 850 + (_rng.nextInt(3) * 150);
-    _walkPhysicsCtrl.duration = Duration(milliseconds: durationMs);
-    _walkPhysicsCtrl.forward(from: 0.0);
+    int stepCount = 0;
+    const int totalTicks = 12; // Complete 12-step cycle
+    const double stridePixel = 4.0; // Steady stride per tick
+
+    _stepTickerTimer?.cancel();
+    _stepTickerTimer = Timer.periodic(const Duration(milliseconds: 110), (timer) {
+      if (!mounted || _isDragging) {
+        timer.cancel();
+        return;
+      }
+
+      stepCount++;
+      setState(() {
+        // Loops strictly through walk_1 to walk_12
+        _currentWalkFrame = (_currentWalkFrame % 12) + 1;
+        _currentPos = Offset(_currentPos.dx + (_facingDirection * stridePixel), _currentPos.dy);
+      });
+
+      if (stepCount >= totalTicks) {
+        timer.cancel();
+        setState(() => _state = PetBehaviorState.idle);
+        _scheduleNextBehavior();
+      }
+    });
   }
 
-  void _triggerGroovyDance() {
+  // --- FULL 11-FRAME DANCE ROUTINE ---
+  void _startShimejiDance() {
     if (!mounted) return;
 
     setState(() {
@@ -1388,27 +1316,46 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       _currentDanceFrame = 1;
     });
 
-    _danceLoopCtrl.forward(from: 0.0);
+    int danceStep = 0;
+    _stepTickerTimer?.cancel();
+    _stepTickerTimer = Timer.periodic(const Duration(milliseconds: 150), (timer) {
+      if (!mounted || _isDragging) {
+        timer.cancel();
+        return;
+      }
+
+      danceStep++;
+      if (danceStep <= 11) {
+        setState(() => _currentDanceFrame = danceStep);
+      } else {
+        timer.cancel();
+        _triggerTiredRestMode();
+      }
+    });
+  }
+
+  void _triggerTiredRestMode() {
+    setState(() => _state = PetBehaviorState.restingSit);
+    Timer(Duration(milliseconds: 3500 + _rng.nextInt(1500)), () {
+      if (mounted && !_isDragging) {
+        setState(() => _state = PetBehaviorState.idle);
+        _scheduleNextBehavior();
+      }
+    });
   }
 
   void _triggerLaserBlast() {
-    if (!mounted) return;
-
     final size = MediaQuery.of(context).size;
-    final double beamLength = size.width * 0.75;
-
     setState(() {
       _state = PetBehaviorState.shootingLaser;
       _isShootingLaser = true;
       _laserTargetPoint = Offset(
-        _handWorldBlasterPos.dx + (_facingDirection * beamLength),
+        _handWorldBlasterPos.dx + (_facingDirection * (size.width * 0.75)),
         _handWorldBlasterPos.dy,
       );
     });
 
-    if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
-      widget.onTamperSubwoofer();
-    }
+    if (_currentPos.dy > 50.0 && _currentPos.dx < 0) widget.onTamperSubwoofer();
 
     Timer(const Duration(milliseconds: 700), () {
       if (!mounted) return;
@@ -1421,7 +1368,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
   }
 
   void _triggerTravelToAnotherCard() {
-    if (!mounted) return;
     final size = MediaQuery.of(context).size;
     final spots = _getLedgeLocations(size);
     final target = spots[_rng.nextInt(spots.length)];
@@ -1437,12 +1383,10 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     _leapStartPos = _currentPos;
     _leapEndPos = target;
     _facingDirection = (target.dx >= _currentPos.dx) ? 1.0 : -1.0;
-
     setState(() {
       _state = PetBehaviorState.leaping;
       _currentDanceFrame = 9;
     });
-
     _leapCtrl.forward(from: 0.0);
   }
 
@@ -1452,7 +1396,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
       _isPortalOpen = true;
       _state = PetBehaviorState.idle;
     });
-
     _portalCtrl.forward(from: 0.0);
 
     Future.delayed(const Duration(milliseconds: 300), () {
@@ -1491,30 +1434,24 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
 
     Future.delayed(const Duration(milliseconds: 400), () {
       if (!mounted || _isDragging) return;
-
-      if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
-        widget.onTamperSubwoofer();
-      }
-
+      if (_currentPos.dy > 50.0 && _currentPos.dx < 0) widget.onTamperSubwoofer();
       _scheduleNextBehavior();
     });
   }
 
   void _onPokePet() {
     _decisionTimer?.cancel();
-    _restTimer?.cancel();
-    _walkPhysicsCtrl.stop();
-    _danceLoopCtrl.stop();
+    _stepTickerTimer?.cancel();
     _leapCtrl.stop();
     setState(() => _isShootingLaser = false);
 
     if (_state == PetBehaviorState.restingSit) {
-      _triggerGroovyDance();
+      _startShimejiDance();
       return;
     }
 
     if (_rng.nextBool()) {
-      _triggerGroovyDance();
+      _startShimejiDance();
     } else {
       _triggerTravelToAnotherCard();
     }
@@ -1522,27 +1459,19 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
 
   String _getCurrentFrameAsset() {
     switch (_state) {
-      case PetBehaviorState.walking:
-        return 'assets/pet/walk_$_currentWalkFrame.png';
-      case PetBehaviorState.dancing:
-        return 'assets/pet/dance_$_currentDanceFrame.png';
-      case PetBehaviorState.restingSit:
-        return 'assets/pet/pet_sit.png';
-      case PetBehaviorState.shootingLaser:
-        return 'assets/pet/dance_10.png';
-      case PetBehaviorState.leaping:
-        return 'assets/pet/dance_9.png';
-      case PetBehaviorState.idle:
-        return 'assets/pet/walk_1.png';
+      case PetBehaviorState.walking: return 'assets/pet/walk_$_currentWalkFrame.png';
+      case PetBehaviorState.dancing: return 'assets/pet/dance_$_currentDanceFrame.png';
+      case PetBehaviorState.restingSit: return 'assets/pet/pet_sit.png';
+      case PetBehaviorState.shootingLaser: return 'assets/pet/dance_10.png';
+      case PetBehaviorState.leaping: return 'assets/pet/dance_9.png';
+      case PetBehaviorState.idle: return 'assets/pet/walk_1.png';
     }
   }
 
   @override
   void dispose() {
     _decisionTimer?.cancel();
-    _restTimer?.cancel();
-    _walkPhysicsCtrl.dispose();
-    _danceLoopCtrl.dispose();
+    _stepTickerTimer?.cancel();
     _leapCtrl.dispose();
     _portalCtrl.dispose();
     _laserPulseCtrl.dispose();
@@ -1558,7 +1487,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
         clipBehavior: Clip.none,
         alignment: Alignment.center,
         children: [
-          // 1. Swirling Cyber Portal
           if (_isPortalOpen && _portalPos != null)
             Transform.translate(
               offset: _portalPos!,
@@ -1571,7 +1499,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
               ),
             ),
 
-          // 2. ACTIVE GLOWING NEON LASER BEAM
           if (_isShootingLaser && _laserTargetPoint != null)
             CustomPaint(
               size: const Size(double.infinity, double.infinity),
@@ -1583,7 +1510,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
               ),
             ),
 
-          // 3. Animated Cyber Pet (160x160 px)
           Transform.translate(
             offset: _currentPos,
             child: Transform.scale(
@@ -1594,9 +1520,7 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
                 onPanStart: (_) {
                   _isDragging = true;
                   _decisionTimer?.cancel();
-                  _restTimer?.cancel();
-                  _walkPhysicsCtrl.stop();
-                  _danceLoopCtrl.stop();
+                  _stepTickerTimer?.cancel();
                   _leapCtrl.stop();
                   setState(() {
                     _isShootingLaser = false;
@@ -1607,9 +1531,7 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
                   });
                 },
                 onPanUpdate: (details) {
-                  setState(() {
-                    _currentPos += details.delta;
-                  });
+                  setState(() => _currentPos += details.delta);
                 },
                 onPanEnd: (_) {
                   _isDragging = false;
@@ -1622,6 +1544,7 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
                   child: Image.asset(
                     _getCurrentFrameAsset(),
                     fit: BoxFit.contain,
+                    gaplessPlayback: true,
                   ),
                 ),
               ),
@@ -1632,7 +1555,6 @@ class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with Ticker
     );
   }
 }
-
 // =========================================================================
 // 5. BLASTER NEON LASER BEAM PAINTER
 // =========================================================================
