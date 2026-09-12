@@ -1,0 +1,19 @@
+name: nv_audio_studio
+description: "Minimalist Studio DSP Controller for ESP32 TDA7419"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  web_socket_channel: ^3.0.0
+  provider: ^6.1.1
+  shared_preferences: ^2.2.2
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/pet/
