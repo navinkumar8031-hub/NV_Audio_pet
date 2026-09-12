@@ -740,7 +740,7 @@ class _StudioScreenState extends State<StudioScreen> {
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const SizedBox(height: 70), // Headroom for Pet Swings
+                          const SizedBox(height: 70),
 
                           // 1. MASTER OUTPUT GAIN
                           SizedBox(
@@ -1013,7 +1013,7 @@ class _StudioScreenState extends State<StudioScreen> {
               ],
             ),
 
-            // --- 2. GLOBAL NEON-LASER SWINGING CYBER PET OVERLAY ---
+            // --- 2. GLOBAL HAND-LOCKED LASER & MAGIC PORTAL OVERLAY ---
             Positioned.fill(
               child: IgnorePointer(
                 ignoring: false,
@@ -1081,7 +1081,7 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. CYBER PET SHIMEJI ENGINE WITH DYNAMIC LASER GRAPPLE SWING
+// 4. CYBER-PET ENGINE: HAND-LOCKED LASER + MAGIC PORTAL + CHAOS SPEED
 // =========================================================================
 enum PetPose { idle, walk, shoot, swing, land, sit }
 
@@ -1102,34 +1102,44 @@ class CyberPetLaserOverseer extends StatefulWidget {
 class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with TickerProviderStateMixin {
   late AnimationController _swingCtrl;
   late AnimationController _pulseCtrl;
+  late AnimationController _portalCtrl;
   final Random _rng = Random();
 
-  Offset _currentPos = const Offset(0.0, -180.0);
-  Offset _startPos = const Offset(0.0, -180.0);
-  Offset _targetPos = const Offset(0.0, -180.0);
-  Offset? _laserAnchor; // Target ledge where laser beam connects
+  Offset _currentPos = const Offset(0.0, -260.0);
+  Offset _startPos = const Offset(0.0, -260.0);
+  Offset _targetPos = const Offset(0.0, -260.0);
+  Offset? _laserAnchor;
+
+  // Portal State
+  Offset? _portalPos;
+  bool _isPortalOpen = false;
+  double _petScale = 1.0;
 
   PetPose _currentPose = PetPose.idle;
   double _facingDirection = 1.0;
   Timer? _behaviorTimer;
+  Timer? _walkTimer;
   bool _walkAlternate = false;
+  bool _isDragging = false;
 
-  // Smart Anchor Points (Master Top, Subwoofer Roof, Sleep Timer, Edge)
-  List<Offset> _getAnchors(Size s) {
+  // Real Card Anchors
+  List<Offset> _getCardAnchors(Size s) {
     return [
-      const Offset(0.0, -180.0),             // Master Top Center
-      const Offset(-75.0, -180.0),           // Master Top Left
-      const Offset(75.0, -180.0),            // Master Top Right
-      const Offset(-20.0, -80.0),            // Sitting on Master Edge
-      Offset(-s.width * 0.24, 75.0),         // Subwoofer Card
-      Offset(s.width * 0.24, 75.0),          // Sleep Timer Card
+      const Offset(0.0, -255.0),           // Master Card Roof Center
+      const Offset(-110.0, -255.0),        // Master Card Roof Left
+      const Offset(110.0, -255.0),         // Master Card Roof Right
+      const Offset(-140.0, -100.0),        // Master Card Left Side Ledge
+      const Offset(140.0, -100.0),         // Master Card Right Side Ledge
+      Offset(-s.width * 0.24, 90.0),       // Subwoofer Card Roof
+      Offset(s.width * 0.24, 90.0),        // Sleep Timer Card Roof
     ];
   }
 
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400))..repeat();
+    _pulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1000))..repeat();
+    _portalCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 800));
 
     _swingCtrl = AnimationController(vsync: this);
     _swingCtrl.addListener(_updateSwingKinematics);
@@ -1140,49 +1150,175 @@ class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with Tick
     });
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _planNextUnpredictableMove();
+      _startLedgePatrol();
     });
   }
 
-  void _planNextUnpredictableMove() {
+  // Exact Hand Coordinate Tracker (Facing & Pose Aware)
+  Offset get _handWorldPos {
+    double handXOffset = 0.0;
+    double handYOffset = 0.0;
+
+    if (_currentPose == PetPose.shoot) {
+      handXOffset = _facingDirection > 0 ? 44.0 : -44.0;
+      handYOffset = -10.0;
+    } else if (_currentPose == PetPose.swing) {
+      handXOffset = _facingDirection > 0 ? 32.0 : -32.0;
+      handYOffset = -42.0;
+    } else {
+      handXOffset = _facingDirection > 0 ? 25.0 : -25.0;
+      handYOffset = -15.0;
+    }
+
+    return Offset(_currentPos.dx + handXOffset, _currentPos.dy + handYOffset);
+  }
+
+  void _startLedgePatrol() {
+    int steps = 0;
+    _walkTimer?.cancel();
+
+    final walkInterval = 250 + _rng.nextInt(250);
+
+    _walkTimer = Timer.periodic(Duration(milliseconds: walkInterval), (t) {
+      if (!mounted || _isDragging || _isPortalOpen) return;
+      steps++;
+      _walkAlternate = !_walkAlternate;
+
+      if (_currentPose == PetPose.idle || _currentPose == PetPose.walk) {
+        setState(() {
+          _currentPose = _walkAlternate ? PetPose.walk : PetPose.idle;
+          _currentPos = Offset(_currentPos.dx + (_facingDirection * 4.5), _currentPos.dy);
+        });
+      }
+
+      if (steps > 5 + _rng.nextInt(5)) {
+        t.cancel();
+        _sitOrLaunchNext();
+      }
+    });
+  }
+
+  void _sitOrLaunchNext() {
+    if (!mounted || _isDragging || _isPortalOpen) return;
+
+    if (_rng.nextBool()) {
+      setState(() => _currentPose = PetPose.sit);
+      _behaviorTimer = Timer(Duration(milliseconds: 1500 + _rng.nextInt(2000)), () {
+        if (mounted && !_isDragging) _decideUnpredictableMove();
+      });
+    } else {
+      _decideUnpredictableMove();
+    }
+  }
+
+  void _decideUnpredictableMove() {
+    // 35% chance to teleport via Magic Portal, 65% chance to Laser Swing
+    if (_rng.nextDouble() < 0.35) {
+      _triggerMagicPortalTeleport();
+    } else {
+      _launchLaserSwing();
+    }
+  }
+
+  // --- ESCAPE 1: MAGIC CYBER PORTAL TELEPORT ---
+  void _triggerMagicPortalTeleport() {
+    if (!mounted) return;
+    _walkTimer?.cancel();
+    _behaviorTimer?.cancel();
+
+    final size = MediaQuery.of(context).size;
+    final anchors = _getCardAnchors(size);
+    final target = anchors[_rng.nextInt(anchors.length)];
+
+    setState(() {
+      _laserAnchor = null;
+      _portalPos = _currentPos;
+      _isPortalOpen = true;
+      _currentPose = PetPose.idle;
+    });
+
+    _portalCtrl.forward(from: 0.0);
+
+    // Shrink & vanish into portal
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (!mounted) return;
+      setState(() => _petScale = 0.0);
+
+      // Re-open exit portal at destination
+      Future.delayed(const Duration(milliseconds: 400), () {
+        if (!mounted) return;
+        setState(() {
+          _portalPos = target;
+          _currentPos = target;
+        });
+
+        // Pop out of destination portal
+        Future.delayed(const Duration(milliseconds: 250), () {
+          if (!mounted) return;
+          setState(() {
+            _petScale = 1.0;
+            _currentPose = PetPose.land;
+          });
+
+          // Close portal
+          Future.delayed(const Duration(milliseconds: 400), () {
+            if (!mounted) return;
+            setState(() => _isPortalOpen = false);
+            _onArrivedSuperheroLanding();
+          });
+        });
+      });
+    });
+  }
+
+  // --- ESCAPE 2: DYNAMIC LASER SWING ---
+  void _launchLaserSwing([Offset? customTarget]) {
     if (!mounted) return;
     final size = MediaQuery.of(context).size;
-    final anchors = _getAnchors(size);
+    final anchors = _getCardAnchors(size);
 
-    final nextTarget = anchors[_rng.nextInt(anchors.length)];
-    final double dist = (nextTarget - _currentPos).distance;
-
+    final nextTarget = customTarget ?? anchors[_rng.nextInt(anchors.length)];
     _startPos = _currentPos;
     _targetPos = nextTarget;
     _facingDirection = (nextTarget.dx >= _currentPos.dx) ? 1.0 : -1.0;
 
-    // Laser beam anchor point placed slightly above target card
     _laserAnchor = Offset(
-      (nextTarget.dx + _startPos.dx) / 2 + (_rng.nextBool() ? 35 : -35),
-      min(_startPos.dy, nextTarget.dy) - 90,
+      (nextTarget.dx + _startPos.dx) / 2 + (_rng.nextBool() ? 45 : -45),
+      min(_startPos.dy, nextTarget.dy) - 130,
     );
 
-    // 1. Trigger Shoot Pose first (Charging neon laser)
-    setState(() => _currentPose = PetPose.shoot);
+    // Unpredictable Swing Speed
+    final speedProfile = _rng.nextInt(3);
+    int moveMs;
 
-    Future.delayed(const Duration(milliseconds: 320), () {
-      if (!mounted) return;
-      // 2. Mid-air Laser Swing
+    if (speedProfile == 0) {
+      moveMs = 500 + _rng.nextInt(200); // Sonic Dash
+    } else if (speedProfile == 1) {
+      moveMs = 900 + _rng.nextInt(400); // Normal
+    } else {
+      moveMs = 1500 + _rng.nextInt(500); // Floaty
+    }
+
+    setState(() {
+      _petScale = 1.0;
+      _currentPose = PetPose.shoot;
+    });
+
+    Future.delayed(const Duration(milliseconds: 200), () {
+      if (!mounted || _isDragging) return;
       setState(() => _currentPose = PetPose.swing);
-      final int moveMs = (1400 + (dist * 5.5)).toInt().clamp(1200, 2600);
       _swingCtrl.duration = Duration(milliseconds: moveMs);
       _swingCtrl.forward(from: 0.0);
     });
   }
 
   void _updateSwingKinematics() {
+    if (_isDragging) return;
     final double t = _swingCtrl.value;
-    // Cubic Bézier arc path for pendulum swinging gravity
     final Offset p0 = _startPos;
-    final Offset p1 = Offset(_laserAnchor!.dx, _laserAnchor!.dy + 50);
+    final Offset p1 = Offset(_laserAnchor!.dx, _laserAnchor!.dy + 65);
     final Offset p2 = _targetPos;
 
-    // Curved parabolic trajectory
     final double curX = (1 - t) * (1 - t) * p0.dx + 2 * (1 - t) * t * p1.dx + t * t * p2.dx;
     final double curY = (1 - t) * (1 - t) * p0.dy + 2 * (1 - t) * t * p1.dy + t * t * p2.dy;
 
@@ -1192,53 +1328,30 @@ class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with Tick
   }
 
   void _onArrivedSuperheroLanding() {
-    _laserAnchor = null; // Disengage laser line
-
-    // 3. Trigger 3-Point Superhero Landing Pose
+    _laserAnchor = null;
     setState(() => _currentPose = PetPose.land);
 
-    Future.delayed(const Duration(milliseconds: 450), () {
-      if (!mounted) return;
+    Future.delayed(const Duration(milliseconds: 380), () {
+      if (!mounted || _isDragging) return;
 
-      // Settle down based on location
-      if (_currentPos.dy > 60.0 && _currentPos.dx < 0) {
-        // At Subwoofer Card
+      if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
         setState(() => _currentPose = PetPose.idle);
         widget.onTamperSubwoofer();
-      } else if (_currentPos.dy > -110.0 && _currentPos.dy < 0) {
-        // Sitting on Master Gain ledge
-        setState(() => _currentPose = PetPose.sit);
       } else {
-        // Card Roof
         setState(() => _currentPose = PetPose.idle);
-        _startMiniPatrol();
       }
 
-      // Plan next jump in 3 to 6 seconds
-      _behaviorTimer?.cancel();
-      _behaviorTimer = Timer(Duration(milliseconds: 3000 + _rng.nextInt(3000)), () {
-        if (mounted) _planNextUnpredictableMove();
+      _behaviorTimer = Timer(Duration(milliseconds: 1400 + _rng.nextInt(1800)), () {
+        if (mounted && !_isDragging) _startLedgePatrol();
       });
     });
   }
 
-  void _startMiniPatrol() {
-    // Alternate walk / idle on card ledge
-    Timer.periodic(const Duration(milliseconds: 350), (timer) {
-      if (!mounted || _currentPose != PetPose.idle && _currentPose != PetPose.walk) {
-        timer.cancel();
-        return;
-      }
-      _walkAlternate = !_walkAlternate;
-      setState(() => _currentPose = _walkAlternate ? PetPose.walk : PetPose.idle);
-    });
-  }
-
-  void _onPokePet() {
-    // Tap reaction: Immediately fire laser and escape!
+  void _onInteractedPoke() {
+    _walkTimer?.cancel();
     _behaviorTimer?.cancel();
     _swingCtrl.stop();
-    _planNextUnpredictableMove();
+    _decideUnpredictableMove();
   }
 
   String _getAssetForPose(PetPose pose) {
@@ -1255,8 +1368,10 @@ class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with Tick
   @override
   void dispose() {
     _behaviorTimer?.cancel();
+    _walkTimer?.cancel();
     _swingCtrl.dispose();
     _pulseCtrl.dispose();
+    _portalCtrl.dispose();
     super.dispose();
   }
 
@@ -1266,41 +1381,70 @@ class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with Tick
 
     return Center(
       child: Stack(
+        clipBehavior: Clip.none,
         alignment: Alignment.center,
         children: [
-          // 1. Real-time Glowing Laser Beam Canvas
+          // 1. Swirling Cyber Portal
+          if (_isPortalOpen && _portalPos != null)
+            Transform.translate(
+              offset: _portalPos!,
+              child: CustomPaint(
+                size: const Size(120, 120),
+                painter: _CyberPortalPainter(
+                  portalColor: laserColor,
+                  rotation: _pulseCtrl.value * 2 * pi,
+                ),
+              ),
+            ),
+
+          // 2. Hand-Locked Glowing Neon Laser Beam
           if (_laserAnchor != null && (_currentPose == PetPose.shoot || _currentPose == PetPose.swing))
             CustomPaint(
               size: const Size(double.infinity, double.infinity),
-              painter: _NeonLaserGrapplePainter(
-                handOrigin: _currentPos,
+              painter: _HandLockedLaserPainter(
+                exactHandWorldPos: _handWorldPos,
                 targetAnchor: _laserAnchor!,
                 laserColor: laserColor,
                 pulse: _pulseCtrl.value,
               ),
             ),
 
-          // 2. Character Sprite With Interactive Physics
+          // 3. Large Responsive Pet Character (130x130 px)
           Transform.translate(
             offset: _currentPos,
             child: Transform.scale(
-              scaleX: _facingDirection,
-              scaleY: 1.0,
+              scaleX: _facingDirection * _petScale,
+              scaleY: _petScale,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: _onPokePet,
+                onPanStart: (_) {
+                  _isDragging = true;
+                  _walkTimer?.cancel();
+                  _behaviorTimer?.cancel();
+                  _swingCtrl.stop();
+                  setState(() {
+                    _laserAnchor = null;
+                    _isPortalOpen = false;
+                    _petScale = 1.0;
+                    _currentPose = PetPose.swing;
+                  });
+                },
+                onPanUpdate: (details) {
+                  setState(() {
+                    _currentPos += details.delta;
+                  });
+                },
+                onPanEnd: (_) {
+                  _isDragging = false;
+                  _decideUnpredictableMove();
+                },
+                onTap: _onInteractedPoke,
                 child: SizedBox(
-                  width: 90,
-                  height: 90,
+                  width: 130,
+                  height: 130,
                   child: Image.asset(
                     _getAssetForPose(_currentPose),
                     fit: BoxFit.contain,
-                    // If image is transparent PNG, it renders seamlessly
-                    errorBuilder: (ctx, err, stack) => Icon(
-                      Icons.smart_toy,
-                      size: 40,
-                      color: laserColor,
-                    ),
                   ),
                 ),
               ),
@@ -1313,16 +1457,16 @@ class _CyberPetLaserOverseerState extends State<CyberPetLaserOverseer> with Tick
 }
 
 // =========================================================================
-// 5. NEON LASER BEAM & ENERGY SPARK PAINTER
+// 5. HAND-LOCKED NEON LASER BEAM PAINTER
 // =========================================================================
-class _NeonLaserGrapplePainter extends CustomPainter {
-  final Offset handOrigin;
+class _HandLockedLaserPainter extends CustomPainter {
+  final Offset exactHandWorldPos;
   final Offset targetAnchor;
   final Color laserColor;
   final double pulse;
 
-  _NeonLaserGrapplePainter({
-    required this.handOrigin,
+  _HandLockedLaserPainter({
+    required this.exactHandWorldPos,
     required this.targetAnchor,
     required this.laserColor,
     required this.pulse,
@@ -1331,43 +1475,91 @@ class _NeonLaserGrapplePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final pHand = center + handOrigin + const Offset(10, -10);
+    final pHand = center + exactHandWorldPos;
     final pTarget = center + targetAnchor;
 
-    // 1. Wide Outer Glow
     final glowPaint = Paint()
-      ..color = laserColor.withOpacity(0.45)
-      ..strokeWidth = 6.0 + sin(pulse * pi) * 2.0
+      ..color = laserColor.withOpacity(0.55)
+      ..strokeWidth = 7.0 + sin(pulse * pi) * 2.5
       ..strokeCap = StrokeCap.round
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
     canvas.drawLine(pHand, pTarget, glowPaint);
 
-    // 2. Core Bright Laser Beam
     final corePaint = Paint()
       ..color = Colors.white
-      ..strokeWidth = 2.2
+      ..strokeWidth = 2.4
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(pHand, pTarget, corePaint);
 
-    // 3. Impact Energy Spark at Target Anchor
     final sparkPaint = Paint()
       ..color = laserColor
       ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 4);
-    canvas.drawCircle(pTarget, 5.0 + sin(pulse * pi * 2) * 2.0, sparkPaint);
-    canvas.drawCircle(pTarget, 2.5, Paint()..color = Colors.white);
+    canvas.drawCircle(pTarget, 6.0 + sin(pulse * pi * 2) * 2.0, sparkPaint);
+    canvas.drawCircle(pTarget, 3.0, Paint()..color = Colors.white);
   }
 
   @override
-  bool shouldRepaint(covariant _NeonLaserGrapplePainter oldDelegate) {
-    return oldDelegate.handOrigin != handOrigin ||
+  bool shouldRepaint(covariant _HandLockedLaserPainter oldDelegate) {
+    return oldDelegate.exactHandWorldPos != exactHandWorldPos ||
         oldDelegate.targetAnchor != targetAnchor ||
         oldDelegate.pulse != pulse ||
         oldDelegate.laserColor != laserColor;
   }
 }
 
+// =========================================================================
+// 6. SWIRLING CYBER PORTAL PAINTER (MAGIC TELEPORT ESCAPE)
+// =========================================================================
+class _CyberPortalPainter extends CustomPainter {
+  final Color portalColor;
+  final double rotation;
+
+  _CyberPortalPainter({required this.portalColor, required this.rotation});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(rotation);
+
+    final ringPaint = Paint()
+      ..color = portalColor.withOpacity(0.65)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.5
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+
+    for (int i = 0; i < 3; i++) {
+      final r = 32.0 + (i * 12.0);
+      canvas.drawArc(
+        Rect.fromCircle(center: Offset.zero, radius: r),
+        i * (pi / 2),
+        pi * 1.2,
+        false,
+        ringPaint,
+      );
+    }
+
+    final corePaint = Paint()
+      ..color = Colors.black
+      ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 8);
+    canvas.drawCircle(Offset.zero, 30, corePaint);
+
+    final whiteGlow = Paint()..color = Colors.white.withOpacity(0.7);
+    canvas.drawCircle(Offset.zero, 6, whiteGlow);
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _CyberPortalPainter oldDelegate) {
+    return oldDelegate.rotation != rotation || oldDelegate.portalColor != portalColor;
+  }
+}
+
 // ==========================================================
-// 6. INDIVIDUAL POP-ZOOM VERTICAL FADER
+// 7. INDIVIDUAL POP-ZOOM VERTICAL FADER
 // ==========================================================
 class _StudioVerticalFader extends StatefulWidget {
   final String title;
@@ -1495,7 +1687,7 @@ class _StudioVerticalFaderState extends State<_StudioVerticalFader> {
 }
 
 // ==========================================
-// 7. IN-PLACE POP-ZOOM HORIZONTAL SLIDER
+// 8. IN-PLACE POP-ZOOM HORIZONTAL SLIDER
 // ==========================================
 class _InPlacePopHorizontalSlider extends StatefulWidget {
   final double value;
@@ -1559,7 +1751,7 @@ class _InPlacePopHorizontalSliderState extends State<_InPlacePopHorizontalSlider
 }
 
 // ==========================================
-// 8. REAL-TIME EQUALIZER CURVE PAINTER
+// 9. REAL-TIME EQUALIZER CURVE PAINTER
 // ==========================================
 class _EqCurvePainter extends CustomPainter {
   final int bass, mid, treble;
@@ -1612,7 +1804,7 @@ class _EqCurvePainter extends CustomPainter {
 }
 
 // =========================================================
-// 9. COMPACT ROTARY DIAL
+// 10. COMPACT ROTARY DIAL
 // =========================================================
 class RotaryDial extends StatefulWidget {
   final double size;
