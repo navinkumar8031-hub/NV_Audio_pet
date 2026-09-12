@@ -1,18 +1,23 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
 
-// ==========================================
-// 1. WEBSOCKET & THEME ENGINE (ESP32 SYNC)
-// ==========================================
+// =========================================================================
+// 1. ROBUST ESP32 WEBSOCKET ENGINE (TIMEOUT, AUTO-RETRY & MULTI-PORT SUPPORT)
+// =========================================================================
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
   bool isConnected = false;
+  bool isConnecting = false;
   String espIp = "192.168.4.1";
+  Timer? _reconnectTimer;
+  Timer? _pingTimer;
 
   Color neonAccent = const Color(0xFF00F2FE);
 
@@ -103,7 +108,7 @@ class DspWebSocketService extends ChangeNotifier {
     espIp = newIp.trim();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('saved_esp_ip', espIp);
-    _channel?.sink.close();
+    _cleanupSocket();
     connect(espIp);
   }
 
@@ -137,42 +142,114 @@ class DspWebSocketService extends ChangeNotifier {
     await prefs.setInt('night_end_m', endM);
   }
 
-  void connect(String ip) {
-    espIp = ip;
+  void _cleanupSocket() {
+    _pingTimer?.cancel();
+    _reconnectTimer?.cancel();
     try {
-      _channel = WebSocketChannel.connect(Uri.parse('ws://$espIp/ws'));
+      _channel?.sink.close(status.normalClosure);
+    } catch (_) {}
+    _channel = null;
+    isConnected = false;
+    isConnecting = false;
+    notifyListeners();
+  }
+
+  Future<void> connect(String ip) async {
+    if (isConnecting) return;
+    _cleanupSocket();
+    isConnecting = true;
+    espIp = ip.trim();
+    notifyListeners();
+
+    // Clean address format
+    String host = espIp;
+    if (host.startsWith("http://")) host = host.replaceFirst("http://", "");
+    if (host.startsWith("ws://")) host = host.replaceFirst("ws://", "");
+    if (host.endsWith("/")) host = host.substring(0, host.length - 1);
+
+    // Primary route ws://IP/ws or fallback ws://IP:81
+    final primaryUri = Uri.parse('ws://$host/ws');
+
+    try {
+      final ws = await WebSocket.connect(primaryUri.toString()).timeout(const Duration(seconds: 4));
+      _channel = WebSocketChannel.from(ws);
       isConnected = true;
+      isConnecting = false;
       notifyListeners();
 
       _channel!.stream.listen(
         (data) => _parseSync(data.toString()),
         onDone: () {
           isConnected = false;
+          isConnecting = false;
           notifyListeners();
-          _reconnect();
+          _scheduleReconnect();
         },
         onError: (_) {
           isConnected = false;
+          isConnecting = false;
           notifyListeners();
-          _reconnect();
+          _scheduleReconnect();
         },
+        cancelOnError: true,
       );
+
+      // Heartbeat ping every 10 seconds
+      _pingTimer?.cancel();
+      _pingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+        sendCommand("PING");
+      });
+
       sendCommand("REQ_SYNC");
     } catch (_) {
-      isConnected = false;
-      notifyListeners();
+      // Fallback to direct port 81 (Common for ESPAsyncWebServer or WebSocketsServer)
+      try {
+        final fallbackUri = Uri.parse('ws://$host:81');
+        final wsFallback = await WebSocket.connect(fallbackUri.toString()).timeout(const Duration(seconds: 3));
+        _channel = WebSocketChannel.from(wsFallback);
+        isConnected = true;
+        isConnecting = false;
+        notifyListeners();
+
+        _channel!.stream.listen(
+          (data) => _parseSync(data.toString()),
+          onDone: () {
+            isConnected = false;
+            isConnecting = false;
+            notifyListeners();
+            _scheduleReconnect();
+          },
+          onError: (_) {
+            isConnected = false;
+            isConnecting = false;
+            notifyListeners();
+            _scheduleReconnect();
+          },
+        );
+        sendCommand("REQ_SYNC");
+      } catch (e) {
+        isConnected = false;
+        isConnecting = false;
+        notifyListeners();
+        _scheduleReconnect();
+      }
     }
   }
 
-  void _reconnect() {
-    Timer(const Duration(seconds: 3), () {
-      if (!isConnected) connect(espIp);
+  void _scheduleReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 4), () {
+      if (!isConnected && !isConnecting) {
+        connect(espIp);
+      }
     });
   }
 
   void sendCommand(String cmd) {
     if (isConnected && _channel != null) {
-      _channel!.sink.add(cmd);
+      try {
+        _channel!.sink.add(cmd);
+      } catch (_) {}
     }
   }
 
@@ -253,6 +330,7 @@ class DspWebSocketService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _cleanupSocket();
     _scheduleCheckerTimer?.cancel();
     _localCountDownTimer?.cancel();
     super.dispose();
@@ -338,18 +416,40 @@ class _StudioScreenState extends State<StudioScreen> {
             "ESP32 IP SETTINGS",
             style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.5),
           ),
-          content: TextField(
-            controller: controller,
-            style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              hintText: "e.g. 192.168.1.50",
-              hintStyle: const TextStyle(color: Color(0xFF546E7A)),
-              filled: true,
-              fillColor: const Color(0xFF0A0E17),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1C2638))),
-              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
-            ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: controller,
+                style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  hintText: "e.g. 192.168.4.1",
+                  hintStyle: const TextStyle(color: Color(0xFF546E7A)),
+                  filled: true,
+                  fillColor: const Color(0xFF0A0E17),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1C2638))),
+                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                dsp.isConnected
+                    ? "STATUS: CONNECTED (SYNC ACTIVE)"
+                    : dsp.isConnecting
+                        ? "STATUS: CONNECTING..."
+                        : "STATUS: DISCONNECTED (TAP CONNECT)",
+                style: TextStyle(
+                  color: dsp.isConnected
+                      ? const Color(0xFF00E676)
+                      : dsp.isConnecting
+                          ? Colors.amber
+                          : Colors.redAccent,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
           ),
           actions: [
             TextButton(
@@ -677,7 +777,11 @@ class _StudioScreenState extends State<StudioScreen> {
                               width: 8,
                               height: 8,
                               decoration: BoxDecoration(
-                                color: dsp.isConnected ? const Color(0xFF00E676) : Colors.red,
+                                color: dsp.isConnected
+                                    ? const Color(0xFF00E676)
+                                    : dsp.isConnecting
+                                        ? Colors.amber
+                                        : Colors.red,
                                 shape: BoxShape.circle,
                               ),
                             ),
@@ -1013,11 +1117,11 @@ class _StudioScreenState extends State<StudioScreen> {
               ],
             ),
 
-            // --- 2. GLOBAL HAND-LOCKED LASER & CYBER-PET OVERLAY (160PX) ---
+            // --- 2. GLOBAL SPRITE ENGINE (WALK 1..6, DANCE 1..11, REST PET_SIT) ---
             Positioned.fill(
               child: IgnorePointer(
                 ignoring: false,
-                child: CyberPetOverseer(
+                child: CyberPetMasterEngine(
                   accentColor: accent,
                   onTamperSubwoofer: () {
                     final nextSub = (dsp.subVolume + (Random().nextBool() ? 1 : -1)).clamp(0, 29);
@@ -1081,28 +1185,29 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. CYBER-PET ENGINE: SMOOTH MULTI-STEP WALK + ACTIVE HAND BLASTER LASER
+// 4. MASTER CYBER-PET ENGINE: WALK + DANCE + TIRED PET_SIT REST + PORTAL
 // =========================================================================
-enum PetPose { idle, walk, shoot, land, sit }
+enum PetBehaviorState { idle, walking, dancing, restingSit, shootingLaser, leaping }
 
-class CyberPetOverseer extends StatefulWidget {
+class CyberPetMasterEngine extends StatefulWidget {
   final Color accentColor;
   final VoidCallback onTamperSubwoofer;
 
-  const CyberPetOverseer({
+  const CyberPetMasterEngine({
     super.key,
     required this.accentColor,
     required this.onTamperSubwoofer,
   });
 
   @override
-  State<CyberPetOverseer> createState() => _CyberPetOverseerState();
+  State<CyberPetMasterEngine> createState() => _CyberPetMasterEngineState();
 }
 
-class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProviderStateMixin {
-  late AnimationController _walkStepCtrl;
-  late AnimationController _portalCtrl;
+class _CyberPetMasterEngineState extends State<CyberPetMasterEngine> with TickerProviderStateMixin {
+  late AnimationController _walkPhysicsCtrl;
+  late AnimationController _danceLoopCtrl;
   late AnimationController _leapCtrl;
+  late AnimationController _portalCtrl;
   late AnimationController _laserPulseCtrl;
   final Random _rng = Random();
 
@@ -1123,9 +1228,13 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
   bool _isPortalOpen = false;
   double _petScale = 1.0;
 
-  PetPose _currentPose = PetPose.idle;
+  // Sprite Frames Tracker
+  PetBehaviorState _state = PetBehaviorState.idle;
+  int _currentWalkFrame = 1;  // 1 to 6
+  int _currentDanceFrame = 1; // 1 to 11
   double _facingDirection = 1.0;
   Timer? _decisionTimer;
+  Timer? _restTimer;
   bool _isDragging = false;
 
   List<Offset> _getLedgeLocations(Size s) {
@@ -1133,8 +1242,8 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
       const Offset(0.0, -255.0),           // Master Card Roof Center
       const Offset(-105.0, -255.0),        // Master Card Roof Left
       const Offset(105.0, -255.0),         // Master Card Roof Right
-      const Offset(-145.0, -110.0),        // Master Left Ledge
-      const Offset(145.0, -110.0),         // Master Right Ledge
+      const Offset(-145.0, -110.0),        // Master Left Ledge (Sitting spot)
+      const Offset(145.0, -110.0),         // Master Right Ledge (Sitting spot)
       Offset(-s.width * 0.24, 80.0),       // Subwoofer Roof
       Offset(s.width * 0.24, 80.0),        // Sleep Timer Roof
     ];
@@ -1144,32 +1253,51 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
   void initState() {
     super.initState();
 
-    // 1. Organic Walking Controller
-    _walkStepCtrl = AnimationController(vsync: this);
-    _walkStepCtrl.addListener(() {
-      final t = _walkStepCtrl.value;
+    // 1. Walking Animation Controller (walk_1.png to walk_6.png)
+    _walkPhysicsCtrl = AnimationController(vsync: this);
+    _walkPhysicsCtrl.addListener(() {
+      final t = _walkPhysicsCtrl.value;
       final curX = lerpDouble(_walkStartPos.dx, _walkEndPos.dx, t)!;
-      final bounceY = -sin(t * pi * 3).abs() * 5.0;
+      final bounceY = -sin(t * pi * 3).abs() * 4.0;
+
+      final int f = (t * 6).floor().clamp(0, 5) + 1;
 
       setState(() {
         _currentPos = Offset(curX, _walkStartPos.dy + bounceY);
-        _currentPose = (sin(t * pi * 4) > 0.05) ? PetPose.walk : PetPose.idle;
+        _currentWalkFrame = f;
       });
     });
 
-    _walkStepCtrl.addStatusListener((status) {
+    _walkPhysicsCtrl.addStatusListener((status) {
       if (status == AnimationStatus.completed) {
-        setState(() => _currentPose = PetPose.idle);
-        _scheduleNextAction();
+        setState(() => _state = PetBehaviorState.idle);
+        _scheduleNextBehavior();
       }
     });
 
-    // 2. High-Speed Leap Controller
+    // 2. Dance Controller (dance_1.png to dance_11.png)
+    _danceLoopCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
+    _danceLoopCtrl.addListener(() {
+      final t = _danceLoopCtrl.value;
+      final int f = (t * 11).floor().clamp(0, 10) + 1;
+      setState(() {
+        _currentDanceFrame = f;
+      });
+    });
+
+    // When dance completes -> PET GETS TIRED & SITS DOWN TO REST!
+    _danceLoopCtrl.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _triggerTiredRestMode();
+      }
+    });
+
+    // 3. Leap Controller
     _leapCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
     _leapCtrl.addListener(() {
       final t = _leapCtrl.value;
       final curX = lerpDouble(_leapStartPos.dx, _leapEndPos.dx, t)!;
-      final jumpArc = -sin(t * pi) * 70.0;
+      final jumpArc = -sin(t * pi) * 75.0;
       final curY = lerpDouble(_leapStartPos.dy, _leapEndPos.dy, t)! + jumpArc;
 
       setState(() {
@@ -1183,85 +1311,64 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
       }
     });
 
-    // 3. Portal & Laser Animation Controllers
-    _portalCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
-    _laserPulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 250))..repeat(reverse: true);
+    // 4. Portal & Laser Controllers
+    _portalCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 850));
+    _laserPulseCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 220))..repeat(reverse: true);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scheduleNextAction();
+      _scheduleNextBehavior();
     });
   }
 
-  // Exact Hand Coordinate for 160px Character
-  Offset get _handBlasterWorldPos {
+  Offset get _handWorldBlasterPos {
     final double handX = _facingDirection > 0 ? 54.0 : -54.0;
-    const double handY = -12.0; // Palm height in shoot pose
+    const double handY = -14.0;
     return Offset(_currentPos.dx + handX, _currentPos.dy + handY);
   }
 
-  void _scheduleNextAction() {
-    if (!mounted || _isDragging || _isPortalOpen) return;
+  void _scheduleNextBehavior() {
+    if (!mounted || _isDragging || _isPortalOpen || _state == PetBehaviorState.restingSit) return;
 
     _decisionTimer?.cancel();
-    _decisionTimer = Timer(Duration(milliseconds: 1000 + _rng.nextInt(1500)), () {
-      if (!mounted || _isDragging) return;
+    _decisionTimer = Timer(Duration(milliseconds: 900 + _rng.nextInt(1500)), () {
+      if (!mounted || _isDragging || _state == PetBehaviorState.restingSit) return;
 
-      final actionRoll = _rng.nextInt(10);
+      final roll = _rng.nextInt(10);
 
-      if (actionRoll < 3) {
-        // ACTION A: Smooth Multi-Step Walk
-        _performSmoothSteps();
-      } else if (actionRoll < 5) {
-        // ACTION B: Sit relaxed
-        _performSitRelax();
-      } else if (actionRoll < 8) {
-        // ACTION C: SHOOT POWERFUL NEON LASER BEAM!
-        _performLaserBlasterShot();
+      if (roll < 3) {
+        _triggerContinuousWalk();
+      } else if (roll < 6) {
+        _triggerGroovyDance();
+      } else if (roll < 8) {
+        _triggerLaserBlast();
       } else {
-        // ACTION D: Move to another card (Leap or Portal)
-        _performMoveToAnotherCard();
+        _triggerTravelToAnotherCard();
       }
     });
   }
 
-  // --- 1. FIRE POWERFUL NEON LASER BEAM ---
-  void _performLaserBlasterShot() {
+  // --- TIRED PET RESTS IN pet_sit.png ---
+  void _triggerTiredRestMode() {
     if (!mounted) return;
-
-    final size = MediaQuery.of(context).size;
-    final double beamLength = size.width * 0.75;
-
     setState(() {
-      _currentPose = PetPose.shoot;
-      _isShootingLaser = true;
-      // Laser shoots horizontally in facing direction
-      _laserTargetPoint = Offset(
-        _handBlasterWorldPos.dx + (_facingDirection * beamLength),
-        _handBlasterWorldPos.dy,
-      );
+      _state = PetBehaviorState.restingSit;
     });
 
-    // If near Subwoofer, blast it and adjust value
-    if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
-      widget.onTamperSubwoofer();
-    }
-
-    // Laser stays active for 750ms with pulsating core
-    Timer(const Duration(milliseconds: 750), () {
-      if (!mounted) return;
-      setState(() {
-        _isShootingLaser = false;
-        _currentPose = PetPose.idle;
-      });
-      _scheduleNextAction();
+    // Rest for 3.5 to 5 seconds
+    _restTimer?.cancel();
+    _restTimer = Timer(Duration(milliseconds: 3500 + _rng.nextInt(1500)), () {
+      if (mounted && !_isDragging) {
+        setState(() => _state = PetBehaviorState.idle);
+        _scheduleNextBehavior();
+      }
     });
   }
 
-  // --- 2. SMOOTH MULTI-STEP WALKING ---
-  void _performSmoothSteps() {
+  // --- CONTINUOUS 6-FRAME WALK ---
+  void _triggerContinuousWalk() {
     if (!mounted) return;
 
-    final double stepDistance = 25.0 + _rng.nextInt(25);
+    final double stepDistance = 28.0 + _rng.nextInt(32);
     double targetX = _currentPos.dx + (_facingDirection * stepDistance);
 
     if (targetX > 115.0) {
@@ -1275,35 +1382,69 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
     _walkStartPos = _currentPos;
     _walkEndPos = Offset(targetX, _currentPos.dy);
 
-    final walkDuration = 800 + (_rng.nextInt(4) * 150);
-    _walkStepCtrl.duration = Duration(milliseconds: walkDuration);
-    _walkStepCtrl.forward(from: 0.0);
+    setState(() {
+      _state = PetBehaviorState.walking;
+      _currentWalkFrame = 1;
+    });
+
+    final durationMs = 850 + (_rng.nextInt(3) * 150);
+    _walkPhysicsCtrl.duration = Duration(milliseconds: durationMs);
+    _walkPhysicsCtrl.forward(from: 0.0);
   }
 
-  // --- 3. SIT & RELAX ---
-  void _performSitRelax() {
-    setState(() => _currentPose = PetPose.sit);
-    _decisionTimer = Timer(Duration(milliseconds: 2000 + _rng.nextInt(2500)), () {
-      if (mounted && !_isDragging) {
-        setState(() => _currentPose = PetPose.idle);
-        _scheduleNextAction();
-      }
+  // --- ENERGETIC 11-FRAME DANCE LOOP ---
+  void _triggerGroovyDance() {
+    if (!mounted) return;
+
+    setState(() {
+      _state = PetBehaviorState.dancing;
+      _currentDanceFrame = 1;
+    });
+
+    _danceLoopCtrl.forward(from: 0.0);
+  }
+
+  // --- ACTIVE LASER BLAST ---
+  void _triggerLaserBlast() {
+    if (!mounted) return;
+
+    final size = MediaQuery.of(context).size;
+    final double beamLength = size.width * 0.75;
+
+    setState(() {
+      _state = PetBehaviorState.shootingLaser;
+      _isShootingLaser = true;
+      _laserTargetPoint = Offset(
+        _handWorldBlasterPos.dx + (_facingDirection * beamLength),
+        _handWorldBlasterPos.dy,
+      );
+    });
+
+    if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
+      widget.onTamperSubwoofer();
+    }
+
+    Timer(const Duration(milliseconds: 700), () {
+      if (!mounted) return;
+      setState(() {
+        _isShootingLaser = false;
+        _state = PetBehaviorState.idle;
+      });
+      _scheduleNextBehavior();
     });
   }
 
-  // --- 4. TRAVEL TO ANOTHER CARD ---
-  void _performMoveToAnotherCard() {
+  // --- TRAVEL TO ANOTHER CARD ---
+  void _triggerTravelToAnotherCard() {
     if (!mounted) return;
     final size = MediaQuery.of(context).size;
     final spots = _getLedgeLocations(size);
-    final nextTarget = spots[_rng.nextInt(spots.length)];
+    final target = spots[_rng.nextInt(spots.length)];
 
-    final bool usePortal = _rng.nextBool();
-
-    if (usePortal) {
-      _executeMagicPortalWormhole(nextTarget);
+    if (_rng.nextBool()) {
+      _executeMagicPortalWormhole(target);
     } else {
-      _executeDynamicLeap(nextTarget);
+      _executeDynamicLeap(target);
     }
   }
 
@@ -1312,7 +1453,11 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
     _leapEndPos = target;
     _facingDirection = (target.dx >= _currentPos.dx) ? 1.0 : -1.0;
 
-    setState(() => _currentPose = PetPose.walk);
+    setState(() {
+      _state = PetBehaviorState.leaping;
+      _currentDanceFrame = 9;
+    });
+
     _leapCtrl.forward(from: 0.0);
   }
 
@@ -1320,7 +1465,7 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
     setState(() {
       _portalPos = _currentPos;
       _isPortalOpen = true;
-      _currentPose = PetPose.idle;
+      _state = PetBehaviorState.idle;
     });
 
     _portalCtrl.forward(from: 0.0);
@@ -1340,7 +1485,7 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
           if (!mounted) return;
           setState(() {
             _petScale = 1.0;
-            _currentPose = PetPose.land;
+            _currentDanceFrame = 3;
           });
 
           Future.delayed(const Duration(milliseconds: 350), () {
@@ -1354,59 +1499,67 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
   }
 
   void _onSuperheroLanding() {
-    setState(() => _currentPose = PetPose.land);
+    setState(() {
+      _state = PetBehaviorState.idle;
+      _currentDanceFrame = 3;
+    });
 
     Future.delayed(const Duration(milliseconds: 400), () {
       if (!mounted || _isDragging) return;
 
       if (_currentPos.dy > 50.0 && _currentPos.dx < 0) {
-        setState(() => _currentPose = PetPose.idle);
         widget.onTamperSubwoofer();
-      } else {
-        setState(() => _currentPose = PetPose.idle);
       }
 
-      _scheduleNextAction();
+      _scheduleNextBehavior();
     });
   }
 
   void _onPokePet() {
     _decisionTimer?.cancel();
-    _walkStepCtrl.stop();
+    _restTimer?.cancel();
+    _walkPhysicsCtrl.stop();
+    _danceLoopCtrl.stop();
     _leapCtrl.stop();
     setState(() => _isShootingLaser = false);
 
-    // Tap par 40% laser blast attack, 60% escape jump/portal
-    final roll = _rng.nextInt(10);
-    if (roll < 4) {
-      _performLaserBlasterShot();
-    } else {
-      final size = MediaQuery.of(context).size;
-      final spots = _getLedgeLocations(size);
-      final nextTarget = spots[_rng.nextInt(spots.length)];
+    if (_state == PetBehaviorState.restingSit) {
+      // Poke wakes him up to dance
+      _triggerGroovyDance();
+      return;
+    }
 
-      if (_rng.nextBool()) {
-        _executeMagicPortalWormhole(nextTarget);
-      } else {
-        _executeDynamicLeap(nextTarget);
-      }
+    if (_rng.nextBool()) {
+      _triggerGroovyDance();
+    } else {
+      _triggerTravelToAnotherCard();
     }
   }
 
-  String _getAssetForPose(PetPose pose) {
-    switch (pose) {
-      case PetPose.idle: return 'assets/pet/pet_idle.png';
-      case PetPose.walk: return 'assets/pet/pet_walk.png';
-      case PetPose.shoot: return 'assets/pet/pet_shoot.png';
-      case PetPose.land: return 'assets/pet/pet_land.png';
-      case PetPose.sit: return 'assets/pet/pet_sit.png';
+  // Exact Asset Link
+  String _getCurrentFrameAsset() {
+    switch (_state) {
+      case PetBehaviorState.walking:
+        return 'assets/pet/walk_$_currentWalkFrame.png';
+      case PetBehaviorState.dancing:
+        return 'assets/pet/dance_$_currentDanceFrame.png';
+      case PetBehaviorState.restingSit:
+        return 'assets/pet/pet_sit.png'; // Resting pose after dance
+      case PetBehaviorState.shootingLaser:
+        return 'assets/pet/dance_10.png';
+      case PetBehaviorState.leaping:
+        return 'assets/pet/dance_9.png';
+      case PetBehaviorState.idle:
+        return 'assets/pet/walk_1.png';
     }
   }
 
   @override
   void dispose() {
     _decisionTimer?.cancel();
-    _walkStepCtrl.dispose();
+    _restTimer?.cancel();
+    _walkPhysicsCtrl.dispose();
+    _danceLoopCtrl.dispose();
     _leapCtrl.dispose();
     _portalCtrl.dispose();
     _laserPulseCtrl.dispose();
@@ -1435,19 +1588,19 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
               ),
             ),
 
-          // 2. ACTIVE GLOWING NEON LASER BEAM FROM HAND!
+          // 2. ACTIVE GLOWING NEON LASER BEAM
           if (_isShootingLaser && _laserTargetPoint != null)
             CustomPaint(
               size: const Size(double.infinity, double.infinity),
               painter: _BlasterLaserPainter(
-                handPos: _handBlasterWorldPos,
+                handPos: _handWorldBlasterPos,
                 targetPos: _laserTargetPoint!,
                 laserColor: laserColor,
                 pulse: _laserPulseCtrl.value,
               ),
             ),
 
-          // 3. Extra-Large Cyber Pet (160x160 px)
+          // 3. Animated Cyber Pet (160x160 px)
           Transform.translate(
             offset: _currentPos,
             child: Transform.scale(
@@ -1458,13 +1611,16 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
                 onPanStart: (_) {
                   _isDragging = true;
                   _decisionTimer?.cancel();
-                  _walkStepCtrl.stop();
+                  _restTimer?.cancel();
+                  _walkPhysicsCtrl.stop();
+                  _danceLoopCtrl.stop();
                   _leapCtrl.stop();
                   setState(() {
                     _isShootingLaser = false;
                     _isPortalOpen = false;
                     _petScale = 1.0;
-                    _currentPose = PetPose.walk;
+                    _state = PetBehaviorState.leaping;
+                    _currentDanceFrame = 9;
                   });
                 },
                 onPanUpdate: (details) {
@@ -1481,7 +1637,7 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
                   width: 160,
                   height: 160,
                   child: Image.asset(
-                    _getAssetForPose(_currentPose),
+                    _getCurrentFrameAsset(),
                     fit: BoxFit.contain,
                   ),
                 ),
@@ -1495,7 +1651,7 @@ class _CyberPetOverseerState extends State<CyberPetOverseer> with TickerProvider
 }
 
 // =========================================================================
-// 5. BLASTER NEON LASER BEAM PAINTER (REAL ACTIVE LASER FROM PALM)
+// 5. BLASTER NEON LASER BEAM PAINTER
 // =========================================================================
 class _BlasterLaserPainter extends CustomPainter {
   final Offset handPos;
@@ -1516,14 +1672,12 @@ class _BlasterLaserPainter extends CustomPainter {
     final pStart = center + handPos;
     final pEnd = center + targetPos;
 
-    // 1. Hand Palm Muzzle Flash / Energy Orb
     final muzzleGlow = Paint()
       ..color = laserColor.withOpacity(0.8)
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8);
     canvas.drawCircle(pStart, 8.0 + (pulse * 3.0), muzzleGlow);
     canvas.drawCircle(pStart, 4.0, Paint()..color = Colors.white);
 
-    // 2. Wide Outer Laser Neon Glow
     final glowPaint = Paint()
       ..color = laserColor.withOpacity(0.65)
       ..strokeWidth = 9.0 + (pulse * 4.0)
@@ -1531,21 +1685,18 @@ class _BlasterLaserPainter extends CustomPainter {
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
     canvas.drawLine(pStart, pEnd, glowPaint);
 
-    // 3. Medium Intense Color Core
     final midPaint = Paint()
       ..color = laserColor
       ..strokeWidth = 4.5
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(pStart, pEnd, midPaint);
 
-    // 4. White Super-Hot Center Laser Core
     final corePaint = Paint()
       ..color = Colors.white
       ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
     canvas.drawLine(pStart, pEnd, corePaint);
 
-    // 5. Impact Sparks at End of Beam
     final sparkPaint = Paint()
       ..color = laserColor
       ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 6);
