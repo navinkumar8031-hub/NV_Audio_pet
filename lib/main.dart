@@ -7,7 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ==========================================
-// 1. WEBSOCKET & THEME ENGINE (ORIGINAL PROVEN CODE)
+// 1. WEBSOCKET & THEME ENGINE (PROVEN CODE)
 // ==========================================
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
@@ -45,12 +45,12 @@ class DspWebSocketService extends ChangeNotifier {
   Color get activeCardBg => isNightModeActive ? const Color(0xFF080808) : const Color(0xFF101622);
 
   static const List<Color> availableThemes = [
-    Color(0xFF00F2FE), // Cyber Cyan
-    Color(0xFF00E676), // Neon Green
-    Color(0xFFFFB300), // Electric Amber
-    Color(0xFFFF007F), // Hot Magenta
-    Color(0xFFD500F9), // Plasma Violet
-    Color(0xFFFF3D00), // Flame Orange
+    Color(0xFF00F2FE),
+    Color(0xFF00E676),
+    Color(0xFFFFB300),
+    Color(0xFFFF007F),
+    Color(0xFFD500F9),
+    Color(0xFFFF3D00),
   ];
 
   int volume = 4;
@@ -1013,7 +1013,7 @@ class _StudioScreenState extends State<StudioScreen> {
               ],
             ),
 
-            // --- 2. CYBER PET ON MASTER VOLUME CARD ROOF ---
+            // --- 2. DEDICATED 11-FRAME WALKING ENGINE ---
             Positioned.fill(
               child: IgnorePointer(
                 ignoring: false,
@@ -1075,10 +1075,8 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. SLOW-PACED FLUID CYBER-PET ROOF ENGINE (EASILY CATCHABLE ACTIONS)
+// 4. DEDICATED 11-FRAME WALKING ENGINE (CARD ROOF PATROL ONLY)
 // =========================================================================
-enum PetBehaviorState { idle, walking, dancing }
-
 class CyberPetMasterRoofEngine extends StatefulWidget {
   final Color accentColor;
 
@@ -1092,98 +1090,56 @@ class CyberPetMasterRoofEngine extends StatefulWidget {
 }
 
 class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
-  final Random _rng = Random();
-
+  // Y = -255.0 points directly to Master Volume Card roof
   Offset _currentPos = const Offset(0.0, -255.0);
 
-  PetBehaviorState _state = PetBehaviorState.walking;
-  int _currentWalkFrame = 1;  // walk_1 to walk_12
-  int _currentDanceFrame = 1; // dance_1 to dance_11
+  int _currentWalkFrame = 1;  // Strictly walk_1 to walk_11
   double _facingDirection = 1.0;
-  Timer? _loopTicker;
+  Timer? _walkTicker;
   bool _isDragging = false;
-
-  int _cycleCounter = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startContinuousMasterLoop();
+      _startContinuousWalkLoop();
     });
   }
 
-  void _startContinuousMasterLoop() {
-    _loopTicker?.cancel();
+  void _startContinuousWalkLoop() {
+    _walkTicker?.cancel();
 
-    // 240ms per frame = Relaxed, easily visible action (~4.1 FPS)
-    _loopTicker = Timer.periodic(const Duration(milliseconds: 240), (timer) {
+    // 160ms per frame = Smooth, consistent 2D gait
+    _walkTicker = Timer.periodic(const Duration(milliseconds: 160), (timer) {
       if (!mounted || _isDragging) return;
 
-      if (_state == PetBehaviorState.walking) {
-        _cycleCounter++;
-
-        // Edge Detection on Master Card: Left (-105px) and Right (105px)
-        if (_currentPos.dx >= 105.0) {
-          _facingDirection = -1.0;
-        } else if (_currentPos.dx <= -105.0) {
-          _facingDirection = 1.0;
-        }
-
-        setState(() {
-          _currentWalkFrame = (_currentWalkFrame % 12) + 1;
-          // Stride reduced to 1.8px for steady, natural walking
-          _currentPos = Offset(
-            (_currentPos.dx + (_facingDirection * 1.8)).clamp(-110.0, 110.0),
-            -255.0,
-          );
-        });
-
-        // 24 ticks (lagbhag 5.7 seconds) aaram se patrol karne ke baad dance
-        if (_cycleCounter >= 24 && _currentPos.dx.abs() < 50) {
-          _cycleCounter = 0;
-          setState(() {
-            _state = PetBehaviorState.dancing;
-            _currentDanceFrame = 1;
-          });
-        }
-      } else if (_state == PetBehaviorState.dancing) {
-        setState(() {
-          if (_currentDanceFrame < 11) {
-            _currentDanceFrame++;
-          } else {
-            // Dance routine complete -> Resume slow walk
-            _state = PetBehaviorState.walking;
-            _currentWalkFrame = 1;
-            _facingDirection = _rng.nextBool() ? 1.0 : -1.0;
-          }
-        });
+      // Card patrol boundaries: reverse when reaching edges
+      if (_currentPos.dx >= 105.0) {
+        _facingDirection = -1.0;
+      } else if (_currentPos.dx <= -105.0) {
+        _facingDirection = 1.0;
       }
-    });
-  }
 
-  void _onTapPet() {
-    if (_isDragging) return;
-    setState(() {
-      _state = PetBehaviorState.dancing;
-      _currentDanceFrame = 1;
+      setState(() {
+        // Cycles strictly: 1 -> 2 -> ... -> 11 -> 1
+        _currentWalkFrame = (_currentWalkFrame % 11) + 1;
+
+        // Ground stride: 2.0px per frame syncs with foot placement
+        _currentPos = Offset(
+          (_currentPos.dx + (_facingDirection * 2.0)).clamp(-110.0, 110.0),
+          -255.0,
+        );
+      });
     });
   }
 
   String _getCurrentFrameAsset() {
-    switch (_state) {
-      case PetBehaviorState.walking:
-        return 'assets/pet/walk_$_currentWalkFrame.png';
-      case PetBehaviorState.dancing:
-        return 'assets/pet/dance_$_currentDanceFrame.png';
-      case PetBehaviorState.idle:
-        return 'assets/pet/walk_1.png';
-    }
+    return 'assets/pet/walk_$_currentWalkFrame.png';
   }
 
   @override
   void dispose() {
-    _loopTicker?.cancel();
+    _walkTicker?.cancel();
     super.dispose();
   }
 
@@ -1199,7 +1155,6 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
             behavior: HitTestBehavior.opaque,
             onPanStart: (_) {
               _isDragging = true;
-              setState(() => _state = PetBehaviorState.idle);
             },
             onPanUpdate: (details) {
               setState(() {
@@ -1208,12 +1163,11 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
             },
             onPanEnd: (_) {
               _isDragging = false;
+              // Snap back to Master Card roof baseline
               setState(() {
                 _currentPos = Offset(_currentPos.dx.clamp(-105.0, 105.0), -255.0);
-                _state = PetBehaviorState.walking;
               });
             },
-            onTap: _onTapPet,
             child: SizedBox(
               width: 150,
               height: 150,
@@ -1229,6 +1183,7 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
     );
   }
 }
+
 // ==========================================================
 // 5. INDIVIDUAL POP-ZOOM VERTICAL FADER
 // ==========================================================
