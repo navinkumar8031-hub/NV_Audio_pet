@@ -1067,14 +1067,15 @@ class _StudioScreenState extends State<StudioScreen> {
           ),
         ),
       ),
+
     );
   }
 }
 
 // =========================================================================
-// 4. SHIMEJI FULL-SCREEN PHYSICS & GRAVITY ENGINE
+// 4. SHIMEJI FULL-SCREEN PATROL & GRAVITY ENGINE (FIXED EDGE BOUNCE)
 // =========================================================================
-enum ShimejiState { walking, falling, dragged, landBounce }
+enum ShimejiState { walking, falling, dragged }
 
 class ShimejiCyberPetEngine extends StatefulWidget {
   const ShimejiCyberPetEngine({super.key});
@@ -1084,118 +1085,120 @@ class ShimejiCyberPetEngine extends StatefulWidget {
 }
 
 class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
-  Offset _petPos = const Offset(120.0, 100.0);
+  // Screen relative coordinates
+  double _posX = 120.0;
+  double _posY = 100.0;
   double _vy = 0.0;
-  final double _gravity = 1.1;
-  final double _terminalVelocity = 24.0;
+  final double _gravity = 1.2;
+  final double _terminalVelocity = 22.0;
 
   ShimejiState _state = ShimejiState.falling;
   int _walkFrame = 1;
-  double _facingDirection = 1.0;
+  double _facingDirection = 1.0; // 1.0 = Right, -1.0 = Left
   Timer? _physicsTicker;
   int _walkTickCounter = 0;
 
-  double _currentPlatformY = double.infinity;
-  double _currentPlatformLeft = -double.infinity;
-  double _currentPlatformRight = double.infinity;
+  // Active platform boundaries
+  double _currentGroundY = 600.0;
+  double _patrolLeft = 30.0;
+  double _patrolRight = 320.0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final size = MediaQuery.of(context).size;
-      // Start in middle roof above Master Volume Card
       setState(() {
-        _petPos = Offset(size.width / 2 - 70, size.height * 0.16);
+        _posX = (size.width / 2) - 60;
+        _posY = size.height * 0.15;
       });
-      _startShimejiPhysicsEngine();
+      _startShimejiEngine();
     });
   }
 
-  void _startShimejiPhysicsEngine() {
+  void _startShimejiEngine() {
     _physicsTicker?.cancel();
-    // 60 FPS (16ms) smooth physics updates
+
+    // 60 FPS Engine (16ms)
     _physicsTicker = Timer.periodic(const Duration(milliseconds: 16), (timer) {
-      if (!mounted) return;
-      if (_state == ShimejiState.dragged) return;
+      if (!mounted || _state == ShimejiState.dragged) return;
 
       final screenSize = MediaQuery.of(context).size;
-      final petFootX = _petPos.dx + 70;
-      final petFootY = _petPos.dy + 130;
+      final double petWidth = 120.0;
+      final double petHeight = 120.0;
+      final double footY = _posY + petHeight;
+      final double centerX = _posX + (petWidth / 2);
 
-      // --- PLATFORM SURFACE DETECTOR ---
-      // 1. Master Volume Card Roof: Y ≈ screen * 0.29, X: Center ± 130
-      // 2. Subwoofer & Sleep Timer Rack: Y ≈ screen * 0.58
-      // 3. Parametric EQ Card Roof: Y ≈ screen * 0.74
-      // 4. Screen Bottom Ground: Y ≈ screen - 130
-      final double groundFloor = screenSize.height - 130.0;
-
+      // Defined Ledges based on screen layout
       final platforms = [
-        _Platform(y: screenSize.height * 0.285, left: screenSize.width * 0.1, right: screenSize.width * 0.9),
-        _Platform(y: screenSize.height * 0.585, left: screenSize.width * 0.08, right: screenSize.width * 0.92),
-        _Platform(y: screenSize.height * 0.735, left: screenSize.width * 0.08, right: screenSize.width * 0.92),
-        _Platform(y: groundFloor, left: 0.0, right: screenSize.width),
+        // 1. Master Output Gain Card Roof
+        _Platform(y: screenSize.height * 0.28, left: 35.0, right: screenSize.width - 35.0),
+        // 2. Subwoofer & Sleep Timer Card Roof
+        _Platform(y: screenSize.height * 0.58, left: 20.0, right: screenSize.width - 20.0),
+        // 3. Parametric EQ Card Roof
+        _Platform(y: screenSize.height * 0.74, left: 20.0, right: screenSize.width - 20.0),
+        // 4. Bottom Screen Floor
+        _Platform(y: screenSize.height - 110.0, left: 10.0, right: screenSize.width - 10.0),
       ];
 
+      // --- 1. FALLING STATE ---
       if (_state == ShimejiState.falling) {
         _vy = (_vy + _gravity).clamp(0.0, _terminalVelocity);
-        double nextY = _petPos.dy + _vy;
+        double nextY = _posY + _vy;
+        double nextFootY = nextY + petHeight;
 
-        bool landed = false;
+        bool hasLanded = false;
         for (var p in platforms) {
-          // Check if foot crosses platform from top
-          if (petFootY <= p.y + 4 && (petFootY + _vy) >= p.y && petFootX >= p.left && petFootX <= p.right) {
-            nextY = p.y - 130;
-            _currentPlatformY = p.y;
-            _currentPlatformLeft = p.left;
-            _currentPlatformRight = p.right;
-            landed = true;
+          // Landing condition: foot crosses platform surface while horizontally within bounds
+          if (footY <= p.y + 6 && nextFootY >= p.y && centerX >= p.left && centerX <= p.right) {
+            _posY = p.y - petHeight;
+            _currentGroundY = p.y;
+            _patrolLeft = p.left;
+            _patrolRight = p.right - petWidth; // Safe right bound for left-origin offset
+            _vy = 0.0;
+            _state = ShimejiState.walking;
+            hasLanded = true;
             break;
           }
         }
 
-        if (landed) {
-          _vy = 0.0;
-          setState(() {
-            _petPos = Offset(_petPos.dx, nextY);
+        if (!hasLanded) {
+          _posY = nextY;
+          // Failsafe: Bottom screen ground boundary
+          if (_posY >= screenSize.height - petHeight - 20) {
+            _posY = screenSize.height - petHeight - 20;
+            _currentGroundY = screenSize.height - 20;
+            _patrolLeft = 10.0;
+            _patrolRight = screenSize.width - petWidth - 10.0;
+            _vy = 0.0;
             _state = ShimejiState.walking;
-          });
-        } else {
-          setState(() {
-            _petPos = Offset(_petPos.dx, nextY);
-          });
+          }
         }
-      } else if (_state == ShimejiState.walking) {
-        // --- 10-FRAME CRISP STEP ENGINE ---
+        setState(() {});
+      }
+
+      // --- 2. WALKING / PATROL STATE ---
+      else if (_state == ShimejiState.walking) {
+        // Frame pacing (160ms)
         _walkTickCounter++;
-        // Change frame every 10 physics ticks (~160ms)
         if (_walkTickCounter >= 10) {
           _walkTickCounter = 0;
-          setState(() {
-            _walkFrame = (_walkFrame % 10) + 1;
-          });
+          _walkFrame = (_walkFrame % 10) + 1;
         }
 
-        double nextX = _petPos.dx + (_facingDirection * 1.8);
+        // Advance position
+        _posX += (_facingDirection * 1.8);
 
-        // Edge detection: Reached platform boundary -> Turn around or Walk off to fall
-        if ((nextX + 70) >= _currentPlatformRight) {
-          _facingDirection = -1.0;
-        } else if ((nextX + 70) <= _currentPlatformLeft) {
-          _facingDirection = 1.0;
+        // STABLE EDGE DETECTION & IMMEDIATE FLIP:
+        if (_posX >= _patrolRight) {
+          _posX = _patrolRight;
+          _facingDirection = -1.0; // Left ghumo
+        } else if (_posX <= _patrolLeft) {
+          _posX = _patrolLeft;
+          _facingDirection = 1.0; // Right ghumo
         }
 
-        // Check if pet was moved off platform
-        if (petFootX < _currentPlatformLeft - 10 || petFootX > _currentPlatformRight + 10) {
-          setState(() {
-            _state = ShimejiState.falling;
-            _vy = 2.0;
-          });
-        } else {
-          setState(() {
-            _petPos = Offset(nextX.clamp(0.0, screenSize.width - 140), _petPos.dy);
-          });
-        }
+        setState(() {});
       }
     });
   }
@@ -1208,9 +1211,11 @@ class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.of(context).size;
+
     return Positioned(
-      left: _petPos.dx,
-      top: _petPos.dy,
+      left: _posX,
+      top: _posY,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanStart: (details) {
@@ -1220,27 +1225,24 @@ class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
           });
         },
         onPanUpdate: (details) {
-          final size = MediaQuery.of(context).size;
           setState(() {
-            _petPos = Offset(
-              (_petPos.dx + details.delta.dx).clamp(0.0, size.width - 140),
-              (_petPos.dy + details.delta.dy).clamp(0.0, size.height - 140),
-            );
+            _posX = (_posX + details.delta.dx).clamp(0.0, size.width - 120.0);
+            _posY = (_posY + details.delta.dy).clamp(0.0, size.height - 120.0);
           });
         },
         onPanEnd: (details) {
-          // Release into gravity
+          // Drop with gravity
           setState(() {
             _state = ShimejiState.falling;
-            _vy = (details.velocity.pixelsPerSecond.dy / 80).clamp(-5.0, 10.0);
+            _vy = (details.velocity.pixelsPerSecond.dy / 90).clamp(0.0, 10.0);
           });
         },
-        child: Transform.scale(
-          scaleX: _facingDirection,
-          scaleY: 1.0,
+        child: Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.diagonal3Values(_facingDirection, 1.0, 1.0),
           child: SizedBox(
-            width: 140,
-            height: 140,
+            width: 120,
+            height: 120,
             child: Image.asset(
               'assets/pet/walk_$_walkFrame.png',
               fit: BoxFit.contain,
@@ -1259,6 +1261,7 @@ class _Platform {
   final double right;
   _Platform({required this.y, required this.left, required this.right});
 }
+
 
 // ==========================================================
 // 5. INDIVIDUAL POP-ZOOM VERTICAL FADER
