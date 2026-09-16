@@ -7,8 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ==========================================
-// 1. WEBSOCKET & THEME ENGINE (PROVEN CODE)
+// 1. WEBSOCKET & PET COMMAND SERVICE
 // ==========================================
+enum PetCommandType { none, setVolumeTarget }
+
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
   bool isConnected = false;
@@ -23,6 +25,12 @@ class DspWebSocketService extends ChangeNotifier {
   int nightEndHour = 6;
   int nightEndMinute = 0;
   Timer? _scheduleCheckerTimer;
+
+  // Active assistant mission
+  PetCommandType activeMission = PetCommandType.none;
+  int targetVolumeLevel = 0;
+  String petSpeechBubble = "";
+  Timer? _bubbleDismissTimer;
 
   bool get isNightModeActive {
     if (isNightScheduleEnabled) {
@@ -189,6 +197,49 @@ class DspWebSocketService extends ChangeNotifier {
     }
   }
 
+  // --- BOT COMMAND PARSER ---
+  void dispatchTextCommand(String text) {
+    final clean = text.trim().toLowerCase();
+    final match = RegExp(r'(set\s+)?vol(ume)?\s+(\d+)').firstMatch(clean);
+
+    if (match != null) {
+      final target = int.tryParse(match.group(3) ?? "")?.clamp(0, 29);
+      if (target != null) {
+        targetVolumeLevel = target;
+        activeMission = PetCommandType.setVolumeTarget;
+        showBubble("On it! Setting Vol to $target");
+        notifyListeners();
+        return;
+      }
+    }
+
+    if (clean.contains("mute")) {
+      targetVolumeLevel = 0;
+      activeMission = PetCommandType.setVolumeTarget;
+      showBubble("Muting master gain!");
+      notifyListeners();
+      return;
+    }
+
+    showBubble("Try: 'set volume 12'");
+  }
+
+  void showBubble(String msg) {
+    petSpeechBubble = msg;
+    notifyListeners();
+    _bubbleDismissTimer?.cancel();
+    _bubbleDismissTimer = Timer(const Duration(seconds: 3), () {
+      petSpeechBubble = "";
+      notifyListeners();
+    });
+  }
+
+  void completeMission() {
+    activeMission = PetCommandType.none;
+    showBubble("Done, master!");
+    notifyListeners();
+  }
+
   void _startLocalCountdown() {
     _localCountDownTimer?.cancel();
     if (sleepRemainingSec > 0) {
@@ -255,6 +306,7 @@ class DspWebSocketService extends ChangeNotifier {
   void dispose() {
     _scheduleCheckerTimer?.cancel();
     _localCountDownTimer?.cancel();
+    _bubbleDismissTimer?.cancel();
     super.dispose();
   }
 }
@@ -307,6 +359,7 @@ class _StudioScreenState extends State<StudioScreen> {
   int? localMid;
   int? localTreble;
   bool isEqExpanded = false;
+  final TextEditingController _commandController = TextEditingController();
 
   String _formatTime(int totalSeconds) {
     if (totalSeconds <= 0) return "OFF";
@@ -736,7 +789,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   child: Center(
                     child: SingleChildScrollView(
                       physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -1004,18 +1057,71 @@ class _StudioScreenState extends State<StudioScreen> {
                               ),
                             ),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 70), // Spacing for command bar
                         ],
                       ),
                     ),
                   ),
                 ),
+
+                // --- BOTTOM CYBER COMMAND BAR ---
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF090D15),
+                    border: Border(top: BorderSide(color: const Color(0xFF1C2638), width: 1.2)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.terminal, color: accent, size: 18),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: _commandController,
+                          style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.bold),
+                          decoration: InputDecoration(
+                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            hintText: "Ask Pet: 'set volume 10', 'mute'...",
+                            hintStyle: const TextStyle(color: Color(0xFF455A64), fontSize: 11),
+                            filled: true,
+                            fillColor: const Color(0xFF0F1522),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: const BorderSide(color: Color(0xFF1E283B)),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide: BorderSide(color: accent),
+                            ),
+                          ),
+                          onSubmitted: (val) {
+                            if (val.trim().isNotEmpty) {
+                              dsp.dispatchTextCommand(val);
+                              _commandController.clear();
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: Icon(Icons.send_rounded, color: accent, size: 20),
+                        onPressed: () {
+                          if (_commandController.text.trim().isNotEmpty) {
+                            dsp.dispatchTextCommand(_commandController.text);
+                            _commandController.clear();
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
 
-            // --- 2. FULL-SCREEN SHIMEJI GRAVITY & PHYSICS ENGINE ---
+            // --- 2. COMMAND-DRIVEN JUMPING PET ENGINE ---
             const Positioned.fill(
-              child: ShimejiCyberPetEngine(),
+              child: ShimejiJumpingAssistantEngine(),
             ),
           ],
         ),
@@ -1067,40 +1173,40 @@ class _StudioScreenState extends State<StudioScreen> {
           ),
         ),
       ),
-
     );
   }
 }
 
 // =========================================================================
-// 4. SHIMEJI FULL-SCREEN PATROL & GRAVITY ENGINE (FIXED EDGE BOUNCE)
+// 4. SHIMEJI JUMPING ASSISTANT (COMMAND PARSER & BUTTON BOUNCE ENGINE)
 // =========================================================================
-enum ShimejiState { walking, falling, dragged }
+enum AssistantMode { patrol, runningToButton, jumpingOnButton, dragged, falling }
 
-class ShimejiCyberPetEngine extends StatefulWidget {
-  const ShimejiCyberPetEngine({super.key});
+class ShimejiJumpingAssistantEngine extends StatefulWidget {
+  const ShimejiJumpingAssistantEngine({super.key});
 
   @override
-  State<ShimejiCyberPetEngine> createState() => _ShimejiCyberPetEngineState();
+  State<ShimejiJumpingAssistantEngine> createState() => _ShimejiJumpingAssistantEngineState();
 }
 
-class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
-  // Screen relative coordinates
+class _ShimejiJumpingAssistantEngineState extends State<ShimejiJumpingAssistantEngine> {
   double _posX = 120.0;
   double _posY = 100.0;
   double _vy = 0.0;
   final double _gravity = 1.2;
-  final double _terminalVelocity = 22.0;
 
-  ShimejiState _state = ShimejiState.falling;
+  AssistantMode _mode = AssistantMode.falling;
   int _walkFrame = 1;
-  double _facingDirection = 1.0; // 1.0 = Right, -1.0 = Left
-  Timer? _physicsTicker;
-  int _walkTickCounter = 0;
+  double _facingDirection = 1.0;
+  Timer? _engineTicker;
+  int _animPacerCounter = 0;
 
-  // Active platform boundaries
-  double _currentGroundY = 600.0;
-  double _patrolLeft = 30.0;
+  // Jump Trampoline Physics
+  double _jumpDy = 0.0;
+  double _jumpVy = -8.0;
+  bool _isAirborne = false;
+
+  double _patrolLeft = 35.0;
   double _patrolRight = 320.0;
 
   @override
@@ -1112,92 +1218,148 @@ class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
         _posX = (size.width / 2) - 60;
         _posY = size.height * 0.15;
       });
-      _startShimejiEngine();
+      _startAssistantEngine();
     });
   }
 
-  void _startShimejiEngine() {
-    _physicsTicker?.cancel();
+  void _startAssistantEngine() {
+    _engineTicker?.cancel();
 
-    // 60 FPS Engine (16ms)
-    _physicsTicker = Timer.periodic(const Duration(milliseconds: 16), (timer) {
-      if (!mounted || _state == ShimejiState.dragged) return;
+    _engineTicker = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+      if (!mounted || _mode == AssistantMode.dragged) return;
 
+      final dsp = context.read<DspWebSocketService>();
       final screenSize = MediaQuery.of(context).size;
-      final double petWidth = 120.0;
-      final double petHeight = 120.0;
-      final double footY = _posY + petHeight;
-      final double centerX = _posX + (petWidth / 2);
+      const double petSize = 120.0;
+      final double roofY = screenSize.height * 0.16;
 
-      // Defined Ledges based on screen layout
-      final platforms = [
-        // 1. Master Output Gain Card Roof
-        _Platform(y: screenSize.height * 0.28, left: 35.0, right: screenSize.width - 35.0),
-        // 2. Subwoofer & Sleep Timer Card Roof
-        _Platform(y: screenSize.height * 0.58, left: 20.0, right: screenSize.width - 20.0),
-        // 3. Parametric EQ Card Roof
-        _Platform(y: screenSize.height * 0.74, left: 20.0, right: screenSize.width - 20.0),
-        // 4. Bottom Screen Floor
-        _Platform(y: screenSize.height - 110.0, left: 10.0, right: screenSize.width - 10.0),
-      ];
+      // Master Card Button Coordinates (Minus Button = Left, Plus Button = Right)
+      final double minusBtnX = (screenSize.width / 2) - 100;
+      final double plusBtnX = (screenSize.width / 2) + 20;
+      final double btnY = screenSize.height * 0.31; // Just on top of step buttons
 
-      // --- 1. FALLING STATE ---
-      if (_state == ShimejiState.falling) {
-        _vy = (_vy + _gravity).clamp(0.0, _terminalVelocity);
-        double nextY = _posY + _vy;
-        double nextFootY = nextY + petHeight;
+      // --- 1. ACTIVE MISSION DETECTOR ---
+      if (dsp.activeMission == PetCommandType.setVolumeTarget) {
+        if (_mode != AssistantMode.runningToButton && _mode != AssistantMode.jumpingOnButton) {
+          _mode = AssistantMode.runningToButton;
+        }
+      }
 
-        bool hasLanded = false;
-        for (var p in platforms) {
-          // Landing condition: foot crosses platform surface while horizontally within bounds
-          if (footY <= p.y + 6 && nextFootY >= p.y && centerX >= p.left && centerX <= p.right) {
-            _posY = p.y - petHeight;
-            _currentGroundY = p.y;
-            _patrolLeft = p.left;
-            _patrolRight = p.right - petWidth; // Safe right bound for left-origin offset
-            _vy = 0.0;
-            _state = ShimejiState.walking;
-            hasLanded = true;
-            break;
+      // --- STATE: RUNNING TO BUTTON ---
+      if (_mode == AssistantMode.runningToButton) {
+        final bool needPlus = dsp.targetVolumeLevel > dsp.volume;
+        final bool needMinus = dsp.targetVolumeLevel < dsp.volume;
+
+        if (!needPlus && !needMinus) {
+          // Already on target volume
+          dsp.completeMission();
+          _mode = AssistantMode.patrol;
+          return;
+        }
+
+        final double targetX = needPlus ? plusBtnX : minusBtnX;
+        final double targetY = btnY;
+
+        _animPacerCounter++;
+        if (_animPacerCounter >= 4) {
+          _animPacerCounter = 0;
+          _walkFrame = (_walkFrame % 10) + 1;
+        }
+
+        final dx = targetX - _posX;
+        final dy = targetY - _posY;
+        _facingDirection = dx >= 0 ? 1.0 : -1.0;
+
+        if (dx.abs() > 4) _posX += dx.sign * 4.2;
+        if (dy.abs() > 4) _posY += dy.sign * 4.2;
+
+        if (dx.abs() <= 6 && dy.abs() <= 6) {
+          _posX = targetX;
+          _posY = targetY;
+          _mode = AssistantMode.jumpingOnButton;
+          _jumpDy = 0.0;
+          _jumpVy = -8.0;
+          _isAirborne = true;
+        }
+        setState(() {});
+      }
+
+      // --- STATE: JUMPING ON BUTTON (TRAMPOLINE BOUNCE) ---
+      else if (_mode == AssistantMode.jumpingOnButton) {
+        final bool needPlus = dsp.targetVolumeLevel > dsp.volume;
+        final bool needMinus = dsp.targetVolumeLevel < dsp.volume;
+
+        if (!needPlus && !needMinus) {
+          // Target Achieved -> Return to patrol
+          dsp.completeMission();
+          _jumpDy = 0.0;
+          _mode = AssistantMode.patrol;
+          return;
+        }
+
+        // Jump trajectory physics
+        _jumpDy += _jumpVy;
+        _jumpVy += 0.8; // Gravity pulling pet down onto button
+
+        if (_jumpDy >= 0.0) {
+          // Landed on button: trigger volume change!
+          _jumpDy = 0.0;
+          _jumpVy = -8.5; // Rebound upwards
+
+          if (needPlus) {
+            dsp.adjustVolume(1);
+          } else if (needMinus) {
+            dsp.adjustVolume(-1);
           }
         }
 
-        if (!hasLanded) {
+        _walkFrame = _jumpDy < -6.0 ? 3 : 1;
+        setState(() {});
+      }
+
+      // --- STATE: FALLING ---
+      else if (_mode == AssistantMode.falling) {
+        _vy = (_vy + _gravity).clamp(0.0, 22.0);
+        double nextY = _posY + _vy;
+        double footY = nextY + petSize;
+
+        final double landingLedge = screenSize.height * 0.28;
+        if (footY >= landingLedge && _posY <= landingLedge) {
+          _posY = landingLedge - petSize;
+          _vy = 0.0;
+          _mode = AssistantMode.patrol;
+          _patrolLeft = 35.0;
+          _patrolRight = screenSize.width - petSize - 35.0;
+        } else {
           _posY = nextY;
-          // Failsafe: Bottom screen ground boundary
-          if (_posY >= screenSize.height - petHeight - 20) {
-            _posY = screenSize.height - petHeight - 20;
-            _currentGroundY = screenSize.height - 20;
-            _patrolLeft = 10.0;
-            _patrolRight = screenSize.width - petWidth - 10.0;
+          if (_posY >= screenSize.height - petSize - 80) {
+            _posY = screenSize.height - petSize - 80;
             _vy = 0.0;
-            _state = ShimejiState.walking;
+            _mode = AssistantMode.patrol;
+            _patrolLeft = 20.0;
+            _patrolRight = screenSize.width - petSize - 20.0;
           }
         }
         setState(() {});
       }
 
-      // --- 2. WALKING / PATROL STATE ---
-      else if (_state == ShimejiState.walking) {
-        // Frame pacing (160ms)
-        _walkTickCounter++;
-        if (_walkTickCounter >= 10) {
-          _walkTickCounter = 0;
+      // --- STATE: PATROL WALKING ---
+      else if (_mode == AssistantMode.patrol) {
+        _animPacerCounter++;
+        if (_animPacerCounter >= 10) {
+          _animPacerCounter = 0;
           _walkFrame = (_walkFrame % 10) + 1;
         }
 
-        // Advance position
         _posX += (_facingDirection * 1.8);
 
-        // STABLE EDGE DETECTION & IMMEDIATE FLIP:
         if (_posX >= _patrolRight) {
           _posX = _patrolRight;
-          _facingDirection = -1.0; // Left ghumo
+          _facingDirection = -1.0;
         } else if (_posX <= _patrolLeft) {
           _posX = _patrolLeft;
-          _facingDirection = 1.0; // Right ghumo
+          _facingDirection = 1.0;
         }
-
         setState(() {});
       }
     });
@@ -1205,63 +1367,80 @@ class _ShimejiCyberPetEngineState extends State<ShimejiCyberPetEngine> {
 
   @override
   void dispose() {
-    _physicsTicker?.cancel();
+    _engineTicker?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
+    final dsp = context.watch<DspWebSocketService>();
 
     return Positioned(
       left: _posX,
-      top: _posY,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onPanStart: (details) {
-          setState(() {
-            _state = ShimejiState.dragged;
-            _vy = 0.0;
-          });
-        },
-        onPanUpdate: (details) {
-          setState(() {
-            _posX = (_posX + details.delta.dx).clamp(0.0, size.width - 120.0);
-            _posY = (_posY + details.delta.dy).clamp(0.0, size.height - 120.0);
-          });
-        },
-        onPanEnd: (details) {
-          // Drop with gravity
-          setState(() {
-            _state = ShimejiState.falling;
-            _vy = (details.velocity.pixelsPerSecond.dy / 90).clamp(0.0, 10.0);
-          });
-        },
-        child: Transform(
-          alignment: Alignment.center,
-          transform: Matrix4.diagonal3Values(_facingDirection, 1.0, 1.0),
-          child: SizedBox(
-            width: 120,
-            height: 120,
-            child: Image.asset(
-              'assets/pet/walk_$_walkFrame.png',
-              fit: BoxFit.contain,
-              gaplessPlayback: true,
+      top: _posY + _jumpDy,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Speech Bubble Alert
+          if (dsp.petSpeechBubble.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF0F172A),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: dsp.activeAccent, width: 1.2),
+                boxShadow: [
+                  BoxShadow(color: dsp.activeAccent.withOpacity(0.35), blurRadius: 8)
+                ],
+              ),
+              child: Text(
+                dsp.petSpeechBubble,
+                style: TextStyle(color: dsp.activeAccent, fontSize: 10, fontWeight: FontWeight.bold),
+              ),
+            ),
+
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanStart: (_) {
+              setState(() {
+                _mode = AssistantMode.dragged;
+                _jumpDy = 0.0;
+                _vy = 0.0;
+              });
+            },
+            onPanUpdate: (details) {
+              setState(() {
+                _posX = (_posX + details.delta.dx).clamp(0.0, size.width - 120.0);
+                _posY = (_posY + details.delta.dy).clamp(0.0, size.height - 120.0);
+              });
+            },
+            onPanEnd: (details) {
+              setState(() {
+                _mode = AssistantMode.falling;
+                _vy = (details.velocity.pixelsPerSecond.dy / 90).clamp(0.0, 10.0);
+              });
+            },
+            child: Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.diagonal3Values(_facingDirection, 1.0, 1.0),
+              child: SizedBox(
+                width: 120,
+                height: 120,
+                child: Image.asset(
+                  'assets/pet/walk_$_walkFrame.png',
+                  fit: BoxFit.contain,
+                  gaplessPlayback: true,
+                ),
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
 }
-
-class _Platform {
-  final double y;
-  final double left;
-  final double right;
-  _Platform({required this.y, required this.left, required this.right});
-}
-
 
 // ==========================================================
 // 5. INDIVIDUAL POP-ZOOM VERTICAL FADER
