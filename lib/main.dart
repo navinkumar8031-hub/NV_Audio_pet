@@ -45,12 +45,12 @@ class DspWebSocketService extends ChangeNotifier {
   Color get activeCardBg => isNightModeActive ? const Color(0xFF080808) : const Color(0xFF101622);
 
   static const List<Color> availableThemes = [
-    Color(0xFF00F2FE),
-    Color(0xFF00E676),
-    Color(0xFFFFB300),
-    Color(0xFFFF007F),
-    Color(0xFFD500F9),
-    Color(0xFFFF3D00),
+    Color(0xFF00F2FE), // Cyber Cyan
+    Color(0xFF00E676), // Neon Green
+    Color(0xFFFFB300), // Electric Amber
+    Color(0xFFFF007F), // Hot Magenta
+    Color(0xFFD500F9), // Plasma Violet
+    Color(0xFFFF3D00), // Flame Orange
   ];
 
   int volume = 4;
@@ -1013,7 +1013,7 @@ class _StudioScreenState extends State<StudioScreen> {
               ],
             ),
 
-            // --- 2. DEDICATED 11-FRAME WALKING ENGINE ---
+            // --- 2. DEDICATED 10-FRAME WALKING ENGINE ---
             Positioned.fill(
               child: IgnorePointer(
                 ignoring: false,
@@ -1075,7 +1075,7 @@ class _StudioScreenState extends State<StudioScreen> {
 }
 
 // =========================================================================
-// 4. DEDICATED 11-FRAME WALKING ENGINE (CARD ROOF PATROL ONLY)
+// 4. DEDICATED 10-FRAME WALKING ENGINE (walk_1.png to walk_10.png)
 // =========================================================================
 class CyberPetMasterRoofEngine extends StatefulWidget {
   final Color accentColor;
@@ -1093,7 +1093,7 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
   // Y = -255.0 points directly to Master Volume Card roof
   Offset _currentPos = const Offset(0.0, -255.0);
 
-  int _currentWalkFrame = 1;  // Strictly walk_1 to walk_11
+  int _currentWalkFrame = 1;  // Strictly walk_1 to walk_10
   double _facingDirection = 1.0;
   Timer? _walkTicker;
   bool _isDragging = false;
@@ -1109,7 +1109,7 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
   void _startContinuousWalkLoop() {
     _walkTicker?.cancel();
 
-    // 160ms per frame = Smooth, consistent 2D gait
+    // 160ms per frame = Crisp 10-frame walking cycle
     _walkTicker = Timer.periodic(const Duration(milliseconds: 160), (timer) {
       if (!mounted || _isDragging) return;
 
@@ -1121,8 +1121,8 @@ class _CyberPetMasterRoofEngineState extends State<CyberPetMasterRoofEngine> {
       }
 
       setState(() {
-        // Cycles strictly: 1 -> 2 -> ... -> 11 -> 1
-        _currentWalkFrame = (_currentWalkFrame % 11) + 1;
+        // Cycles strictly: 1 -> 2 -> ... -> 10 -> 1
+        _currentWalkFrame = (_currentWalkFrame % 10) + 1;
 
         // Ground stride: 2.0px per frame syncs with foot placement
         _currentPos = Offset(
