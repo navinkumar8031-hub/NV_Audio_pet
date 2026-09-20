@@ -7,10 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ==========================================
-// 1. WEBSOCKET & PET COMMAND SERVICE
+// 1. WEBSOCKET & DSP SERVICE
 // ==========================================
-enum PetCommandType { none, setVolumeTarget }
-
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
   bool isConnected = false;
@@ -25,12 +23,6 @@ class DspWebSocketService extends ChangeNotifier {
   int nightEndHour = 6;
   int nightEndMinute = 0;
   Timer? _scheduleCheckerTimer;
-
-  // Active assistant mission
-  PetCommandType activeMission = PetCommandType.none;
-  int targetVolumeLevel = 0;
-  String petSpeechBubble = "";
-  Timer? _bubbleDismissTimer;
 
   bool get isNightModeActive {
     if (isNightScheduleEnabled) {
@@ -61,20 +53,32 @@ class DspWebSocketService extends ChangeNotifier {
     Color(0xFFFF3D00),
   ];
 
+  // Core Audio States
   int volume = 4;
   int subVolume = 20;
-  int bass = 5;
+  int bass = 0;
   int mid = 0;
-  int treble = 8;
+  int treble = 4;
+  int balance = 0; // -15 (Left) to +15 (Right)
   String currentSource = "BT AUDIO";
   String sleepTimer = "OFF";
   int sleepRemainingSec = 0;
   Timer? _localCountDownTimer;
 
-  int gain = 15;
-  int loudness = 8;
+  // Filter & Hardware Tuning States
+  int gain = 0;
+  int loudness = 0;
+  String loudnessFreq = "400 Hz";
+  bool isLoudnessHighBoost = false;
+
   String subCutoff = "80 Hz";
   String bassCenter = "60 Hz";
+  String bassQ = "1.25";
+  bool isBassDcMode = false;
+
+  String midCenter = "1.0 kHz";
+  String midQ = "1.0";
+
   String trebleCut = "12.5 kHz";
 
   Future<void> initIpAndConnect() async {
@@ -197,7 +201,6 @@ class DspWebSocketService extends ChangeNotifier {
     }
   }
 
-  // --- BOT COMMAND PARSER ---
   void dispatchTextCommand(String text) {
     final clean = text.trim().toLowerCase();
     final match = RegExp(r'(set\s+)?vol(ume)?\s+(\d+)').firstMatch(clean);
@@ -205,39 +208,21 @@ class DspWebSocketService extends ChangeNotifier {
     if (match != null) {
       final target = int.tryParse(match.group(3) ?? "")?.clamp(0, 29);
       if (target != null) {
-        targetVolumeLevel = target;
-        activeMission = PetCommandType.setVolumeTarget;
-        showBubble("On it! Setting Vol to $target");
+        volume = target;
         notifyListeners();
+        sendDspValue("VOL", target);
         return;
       }
     }
 
     if (clean.contains("mute")) {
-      targetVolumeLevel = 0;
-      activeMission = PetCommandType.setVolumeTarget;
-      showBubble("Muting master gain!");
+      volume = 0;
       notifyListeners();
+      sendDspValue("VOL", 0);
       return;
     }
 
-    showBubble("Try: 'set volume 12'");
-  }
-
-  void showBubble(String msg) {
-    petSpeechBubble = msg;
-    notifyListeners();
-    _bubbleDismissTimer?.cancel();
-    _bubbleDismissTimer = Timer(const Duration(seconds: 3), () {
-      petSpeechBubble = "";
-      notifyListeners();
-    });
-  }
-
-  void completeMission() {
-    activeMission = PetCommandType.none;
-    showBubble("Done, master!");
-    notifyListeners();
+    sendCommand(text.trim());
   }
 
   void _startLocalCountdown() {
@@ -273,24 +258,18 @@ class DspWebSocketService extends ChangeNotifier {
         case "BAS": bass = int.tryParse(v) ?? bass; break;
         case "MID": mid = int.tryParse(v) ?? mid; break;
         case "TRE": treble = int.tryParse(v) ?? treble; break;
+        case "BAL": balance = int.tryParse(v) ?? balance; break;
         case "GAIN": gain = int.tryParse(v) ?? gain; break;
         case "LOUD": loudness = int.tryParse(v) ?? loudness; break;
-        case "SUBCUT": 
-          if (v.contains("Flat")) subCutoff = "Flat";
-          else if (v.contains("80")) subCutoff = "80 Hz";
-          else if (v.contains("100")) subCutoff = "100 Hz";
-          else if (v.contains("120")) subCutoff = "120 Hz";
-          break;
-        case "BCTR": 
-          if (v.contains("60")) bassCenter = "60 Hz";
-          else if (v.contains("80")) bassCenter = "80 Hz";
-          else if (v.contains("100")) bassCenter = "100 Hz";
-          break;
-        case "TRECUT": 
-          if (v.contains("10.0")) trebleCut = "10.0 kHz";
-          else if (v.contains("12.5")) trebleCut = "12.5 kHz";
-          else if (v.contains("15.0")) trebleCut = "15.0 kHz";
-          break;
+        case "LDF": loudnessFreq = v; break;
+        case "LDHB": isLoudnessHighBoost = (v == "1" || v.toLowerCase() == "true"); break;
+        case "SUBCUT": subCutoff = v; break;
+        case "BCTR": bassCenter = v; break;
+        case "BQ": bassQ = v; break;
+        case "BDC": isBassDcMode = (v == "1" || v.toLowerCase() == "true"); break;
+        case "MIDF": midCenter = v; break;
+        case "MIDQ": midQ = v; break;
+        case "TRECUT": trebleCut = v; break;
         case "INP": currentSource = v; break;
         case "SLP": sleepTimer = v; break;
         case "SLP_SEC": 
@@ -306,7 +285,6 @@ class DspWebSocketService extends ChangeNotifier {
   void dispose() {
     _scheduleCheckerTimer?.cancel();
     _localCountDownTimer?.cancel();
-    _bubbleDismissTimer?.cancel();
     super.dispose();
   }
 }
@@ -430,6 +408,7 @@ class _StudioScreenState extends State<StudioScreen> {
   void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: dsp.isNightModeActive ? const Color(0xFF050505) : const Color(0xFF0B1017),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -438,16 +417,17 @@ class _StudioScreenState extends State<StudioScreen> {
         return StatefulBuilder(
           builder: (context, setModalState) {
             final accent = dsp.activeAccent;
-            return Padding(
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.88,
               padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
               child: ListView(
-                shrinkWrap: true,
+                physics: const BouncingScrollPhysics(),
                 children: [
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        "STUDIO HARDWARE & THEME",
+                        "STUDIO HARDWARE & DSP SETTINGS",
                         style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1.5),
                       ),
                       IconButton(
@@ -458,6 +438,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 12),
 
+                  // Night Stealth Card
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -536,6 +517,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 14),
 
+                  // Themes
                   const Text("NEON GLOW THEME COLOR", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 10),
                   Opacity(
@@ -551,8 +533,8 @@ class _StudioScreenState extends State<StudioScreen> {
                           },
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 200),
-                            width: 40,
-                            height: 40,
+                            width: 38,
+                            height: 38,
                             decoration: BoxDecoration(
                               color: c,
                               shape: BoxShape.circle,
@@ -575,6 +557,29 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const Divider(color: Color(0xFF1C2638), height: 26),
 
+                  // Speaker Balance Control
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("SPEAKER BALANCE (L / R)", style: TextStyle(color: Color(0xFF78909C), fontSize: 11, fontWeight: FontWeight.bold)),
+                      Text(
+                        dsp.balance == 0 ? "CENTER" : (dsp.balance < 0 ? "L ${dsp.balance.abs()}" : "R ${dsp.balance}"),
+                        style: TextStyle(color: accent, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: dsp.balance.toDouble(),
+                    min: -15,
+                    max: 15,
+                    divisions: 30,
+                    activeColor: accent,
+                    inactiveColor: const Color(0xFF1E283B),
+                    onChanged: (v) => setModalState(() => dsp.balance = v.toInt()),
+                    onChangeEnd: (v) => dsp.sendDspValue("BAL", v.toInt()),
+                  ),
+
+                  // Input Gain Boost
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -593,6 +598,7 @@ class _StudioScreenState extends State<StudioScreen> {
                     onChangeEnd: (v) => dsp.sendDspValue("GAIN", v.toInt()),
                   ),
 
+                  // Loudness Controls
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -610,31 +616,101 @@ class _StudioScreenState extends State<StudioScreen> {
                     onChanged: (v) => setModalState(() => dsp.loudness = v.toInt()),
                     onChangeEnd: (v) => dsp.sendDspValue("LOUD", v.toInt()),
                   ),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("LOUDNESS CENTER FREQ", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                      Row(
+                        children: [
+                          const Text("HI-BOOST", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                          Switch(
+                            value: dsp.isLoudnessHighBoost,
+                            activeColor: accent,
+                            onChanged: (val) {
+                              setModalState(() => dsp.isLoudnessHighBoost = val);
+                              dsp.sendDspValue("LDHB", val ? 1 : 0);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  _buildOptionRow(["400 Hz", "800 Hz", "2.4 kHz"], dsp.loudnessFreq, accent, (opt) {
+                    setModalState(() => dsp.loudnessFreq = opt);
+                    dsp.sendDspValue("LDF", opt);
+                  }),
                   const Divider(color: Color(0xFF1C2638), height: 24),
 
+                  // Subwoofer Cutoff
                   const Text("SUBWOOFER CUTOFF (LPF)", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 8),
-                  _buildOptionRow(["Flat", "80 Hz", "100 Hz", "120 Hz"], dsp.subCutoff, accent, (opt) {
+                  _buildOptionRow(["Flat", "80 Hz", "120 Hz", "160 Hz"], dsp.subCutoff, accent, (opt) {
                     setModalState(() => dsp.subCutoff = opt);
                     dsp.sendDspValue("SUBCUT", opt);
                   }),
                   const SizedBox(height: 14),
 
-                  const Text("BASS CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                  const SizedBox(height: 8),
-                  _buildOptionRow(["60 Hz", "80 Hz", "100 Hz"], dsp.bassCenter, accent, (opt) {
+                  // Bass Controls (Center, Q, DC Mode)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("BASS CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      Row(
+                        children: [
+                          const Text("DC MODE (SHELVING)", style: TextStyle(color: Color(0xFF78909C), fontSize: 9, fontWeight: FontWeight.bold)),
+                          Switch(
+                            value: dsp.isBassDcMode,
+                            activeColor: accent,
+                            onChanged: (val) {
+                              setModalState(() => dsp.isBassDcMode = val);
+                              dsp.sendDspValue("BDC", val ? 1 : 0);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  _buildOptionRow(["60 Hz", "80 Hz", "100 Hz", "200 Hz"], dsp.bassCenter, accent, (opt) {
                     setModalState(() => dsp.bassCenter = opt);
                     dsp.sendDspValue("BCTR", opt);
                   }),
+                  const SizedBox(height: 10),
+
+                  const Text("BASS QUALITY FACTOR (Q)", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  const SizedBox(height: 8),
+                  _buildOptionRow(["1.0", "1.25", "1.5", "2.0"], dsp.bassQ, accent, (opt) {
+                    setModalState(() => dsp.bassQ = opt);
+                    dsp.sendDspValue("BQ", opt);
+                  }),
                   const SizedBox(height: 14),
 
+                  // Middle Controls (Center, Q)
+                  const Text("MIDDLE CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  const SizedBox(height: 8),
+                  _buildOptionRow(["500 Hz", "1.0 kHz", "1.5 kHz", "2.5 kHz"], dsp.midCenter, accent, (opt) {
+                    setModalState(() => dsp.midCenter = opt);
+                    dsp.sendDspValue("MIDF", opt);
+                  }),
+                  const SizedBox(height: 10),
+
+                  const Text("MIDDLE QUALITY FACTOR (Q)", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  const SizedBox(height: 8),
+                  _buildOptionRow(["0.5", "0.75", "1.0", "1.25"], dsp.midQ, accent, (opt) {
+                    setModalState(() => dsp.midQ = opt);
+                    dsp.sendDspValue("MIDQ", opt);
+                  }),
+                  const SizedBox(height: 14),
+
+                  // Treble Controls
                   const Text("TREBLE CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 8),
-                  _buildOptionRow(["10.0 kHz", "12.5 kHz", "15.0 kHz"], dsp.trebleCut, accent, (opt) {
+                  _buildOptionRow(["10.0 kHz", "12.5 kHz", "15.0 kHz", "17.5 kHz"], dsp.trebleCut, accent, (opt) {
                     setModalState(() => dsp.trebleCut = opt);
                     dsp.sendDspValue("TRECUT", opt);
                   }),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 24),
                 ],
               ),
             );
@@ -712,416 +788,405 @@ class _StudioScreenState extends State<StudioScreen> {
     return Scaffold(
       backgroundColor: dsp.activeBackground,
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            // --- 1. BASE STUDIO CONTROLS ---
-            Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      GestureDetector(
-                        onTap: () => _showIpDialog(context, dsp),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: dsp.isConnected ? const Color(0xFF00E676) : Colors.red,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              "NV STUDIO [${dsp.espIp}]",
-                              style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5),
-                            ),
-                            if (dsp.isNightModeActive) ...[
-                              const SizedBox(width: 6),
-                              const Icon(Icons.nightlight_round, color: Color(0xFF7A6843), size: 12),
-                            ],
-                          ],
+            // Top Bar
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  GestureDetector(
+                    onTap: () => _showIpDialog(context, dsp),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            color: dsp.isConnected ? const Color(0xFF00E676) : Colors.red,
+                            shape: BoxShape.circle,
+                          ),
                         ),
-                      ),
-                      Row(
-                        children: [
-                          GestureDetector(
-                            onTap: () => _showSettingsSheet(context, dsp),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF141C2B),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: const Color(0xFF1C2638)),
-                              ),
-                              child: Icon(Icons.tune, color: accent, size: 16),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          GestureDetector(
-                            onTap: () {
-                              final next = dsp.currentSource == "BT AUDIO" ? "AUX IN" : "BT AUDIO";
-                              dsp.sendDspValue("INP", next);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF141C2B),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: const Color(0xFF1C2638)),
-                              ),
-                              child: Text(
-                                dsp.currentSource,
-                                style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ),
+                        const SizedBox(width: 8),
+                        Text(
+                          "NV STUDIO [${dsp.espIp}]",
+                          style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5),
+                        ),
+                        if (dsp.isNightModeActive) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.nightlight_round, color: Color(0xFF7A6843), size: 12),
                         ],
-                      )
-                    ],
-                  ),
-                ),
-
-                Expanded(
-                  child: Center(
-                    child: SingleChildScrollView(
-                      physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const SizedBox(height: 70),
-
-                          // 1. MASTER OUTPUT GAIN
-                          SizedBox(
-                            width: double.infinity,
-                            child: _glassCard(
-                              cardColor: dsp.activeCardBg,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  const Text(
-                                    "MASTER OUTPUT GAIN",
-                                    style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-                                  ),
-                                  const SizedBox(height: 2),
-                                  RotaryDial(
-                                    size: 140,
-                                    value: dsp.volume,
-                                    accentColor: accent,
-                                    isNightMode: dsp.isNightModeActive,
-                                    onChanged: (_) {},
-                                    onChangeEnd: (v) => dsp.sendDspValue("VOL", v),
-                                  ),
-                                  const SizedBox(height: 8),
-
-                                  Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      _stepButton(
-                                        icon: Icons.remove,
-                                        accent: accent,
-                                        onTap: () => dsp.adjustVolume(-1),
-                                      ),
-                                      const SizedBox(width: 14),
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFF090D14),
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: const Color(0xFF1C2638)),
-                                        ),
-                                        child: Text(
-                                          "STEP ${dsp.volume} / 29",
-                                          style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 14),
-                                      _stepButton(
-                                        icon: Icons.add,
-                                        accent: accent,
-                                        onTap: () => dsp.adjustVolume(1),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-
-                          // 2. SUBWOOFER & SLEEP TIMER RACK
-                          IntrinsicHeight(
-                            child: Row(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Expanded(
-                                  child: _glassCard(
-                                    cardColor: dsp.activeCardBg,
-                                    padding: const EdgeInsets.all(12),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            const Text("SUBWOOFER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
-                                            const SizedBox(height: 2),
-                                            Text("$curSub", style: TextStyle(color: accent, fontSize: 19, fontWeight: FontWeight.bold)),
-                                          ],
-                                        ),
-                                        _InPlacePopHorizontalSlider(
-                                          value: curSub.toDouble(),
-                                          min: 0,
-                                          max: 29,
-                                          divisions: 29,
-                                          accentColor: accent,
-                                          onChanged: (v) => setState(() => localSub = v.toInt()),
-                                          onChangeEnd: (v) {
-                                            setState(() => localSub = null);
-                                            dsp.sendDspValue("SUB", v.toInt());
-                                          },
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-
-                                Expanded(
-                                  child: _glassCard(
-                                    cardColor: dsp.activeCardBg,
-                                    padding: const EdgeInsets.all(12),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            const Text("SLEEP TIMER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
-                                            Text(
-                                              _formatTime(dsp.sleepRemainingSec),
-                                              style: TextStyle(
-                                                color: dsp.sleepRemainingSec > 0 ? accent : const Color(0xFF546E7A),
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.w900,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 6),
-                                        Wrap(
-                                          spacing: 5,
-                                          runSpacing: 5,
-                                          children: ["OFF", "15m", "30m", "60m"].map((t) {
-                                            final isSel = (t == "OFF" && dsp.sleepRemainingSec <= 0) || (dsp.sleepTimer == t && dsp.sleepRemainingSec > 0);
-                                            return GestureDetector(
-                                              onTap: () => dsp.sendDspValue("SLP", t),
-                                              child: AnimatedContainer(
-                                                duration: const Duration(milliseconds: 200),
-                                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-                                                decoration: BoxDecoration(
-                                                  color: isSel ? accent.withOpacity(0.18) : const Color(0xFF121824),
-                                                  borderRadius: BorderRadius.circular(6),
-                                                  border: Border.all(
-                                                    color: isSel ? accent : const Color(0xFF1C2638),
-                                                    width: isSel ? 1.4 : 1.0,
-                                                  ),
-                                                ),
-                                                child: Text(
-                                                  t,
-                                                  style: TextStyle(
-                                                    color: isSel ? accent : const Color(0xFF78909C),
-                                                    fontSize: 10,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          }).toList(),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-
-                          // 3. PARAMETRIC EQ CARD
-                          SizedBox(
-                            width: double.infinity,
-                            child: _glassCard(
-                              cardColor: dsp.activeCardBg,
-                              padding: const EdgeInsets.all(12),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  GestureDetector(
-                                    behavior: HitTestBehavior.opaque,
-                                    onTap: () => setState(() => isEqExpanded = !isEqExpanded),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Icon(
-                                              isEqExpanded ? Icons.lock_open : Icons.lock_outline,
-                                              color: isEqExpanded ? accent : const Color(0xFF607D8B),
-                                              size: 14,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            const Text(
-                                              "PARAMETRIC EQUALIZER",
-                                              style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2),
-                                            ),
-                                          ],
-                                        ),
-                                        Icon(
-                                          isEqExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                                          color: accent,
-                                          size: 18,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-
-                                  const SizedBox(height: 8),
-                                  Container(
-                                    height: 60,
-                                    width: double.infinity,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF0A0E17),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: const Color(0xFF162030)),
-                                    ),
-                                    child: CustomPaint(
-                                      painter: _EqCurvePainter(bass: curBass, mid: curMid, treble: curTreble, accent: accent),
-                                    ),
-                                  ),
-
-                                  AnimatedCrossFade(
-                                    duration: const Duration(milliseconds: 250),
-                                    crossFadeState: isEqExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-                                    firstChild: const SizedBox(width: double.infinity),
-                                    secondChild: Padding(
-                                      padding: const EdgeInsets.only(top: 12.0),
-                                      child: Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                                        children: [
-                                          _StudioVerticalFader(
-                                            title: "BASS",
-                                            freq: dsp.bassCenter,
-                                            val: curBass,
-                                            accentColor: accent,
-                                            onDrag: (v) => setState(() => localBass = v),
-                                            onEnd: (v) {
-                                              setState(() => localBass = null);
-                                              dsp.sendDspValue("BAS", v);
-                                            },
-                                          ),
-                                          _StudioVerticalFader(
-                                            title: "MID",
-                                            freq: "1.0 kHz",
-                                            val: curMid,
-                                            accentColor: accent,
-                                            onDrag: (v) => setState(() => localMid = v),
-                                            onEnd: (v) {
-                                              setState(() => localMid = null);
-                                              dsp.sendDspValue("MID", v);
-                                            },
-                                          ),
-                                          _StudioVerticalFader(
-                                            title: "TREBLE",
-                                            freq: dsp.trebleCut,
-                                            val: curTreble,
-                                            accentColor: accent,
-                                            onDrag: (v) => setState(() => localTreble = v),
-                                            onEnd: (v) {
-                                              setState(() => localTreble = null);
-                                              dsp.sendDspValue("TRE", v);
-                                            },
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 70), // Spacing for command bar
-                        ],
-                      ),
+                      ],
                     ),
                   ),
-                ),
-
-                // --- BOTTOM CYBER COMMAND BAR ---
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF090D15),
-                    border: Border(top: BorderSide(color: const Color(0xFF1C2638), width: 1.2)),
-                  ),
-                  child: Row(
+                  Row(
                     children: [
-                      Icon(Icons.terminal, color: accent, size: 18),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: _commandController,
-                          style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.bold),
-                          decoration: InputDecoration(
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            hintText: "Ask Pet: 'set volume 10', 'mute'...",
-                            hintStyle: const TextStyle(color: Color(0xFF455A64), fontSize: 11),
-                            filled: true,
-                            fillColor: const Color(0xFF0F1522),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: const BorderSide(color: Color(0xFF1E283B)),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(8),
-                              borderSide: BorderSide(color: accent),
-                            ),
+                      GestureDetector(
+                        onTap: () => _showSettingsSheet(context, dsp),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141C2B),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF1C2638)),
                           ),
-                          onSubmitted: (val) {
-                            if (val.trim().isNotEmpty) {
-                              dsp.dispatchTextCommand(val);
-                              _commandController.clear();
-                            }
-                          },
+                          child: Icon(Icons.tune, color: accent, size: 16),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      IconButton(
-                        icon: Icon(Icons.send_rounded, color: accent, size: 20),
-                        onPressed: () {
-                          if (_commandController.text.trim().isNotEmpty) {
-                            dsp.dispatchTextCommand(_commandController.text);
-                            _commandController.clear();
-                          }
+                      GestureDetector(
+                        onTap: () {
+                          final next = dsp.currentSource == "BT AUDIO" ? "AUX IN" : "BT AUDIO";
+                          dsp.sendDspValue("INP", next);
                         },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141C2B),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF1C2638)),
+                          ),
+                          child: Text(
+                            dsp.currentSource,
+                            style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                ],
+              ),
+            ),
+
+            // Main Controls Scrollable Rack
+            Expanded(
+              child: Center(
+                child: SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 6.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // 1. Master Volume Card
+                      SizedBox(
+                        width: double.infinity,
+                        child: _glassCard(
+                          cardColor: dsp.activeCardBg,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              const Text(
+                                "MASTER OUTPUT GAIN",
+                                style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+                              ),
+                              const SizedBox(height: 4),
+                              RotaryDial(
+                                size: 140,
+                                value: dsp.volume,
+                                accentColor: accent,
+                                isNightMode: dsp.isNightModeActive,
+                                onChanged: (_) {},
+                                onChangeEnd: (v) => dsp.sendDspValue("VOL", v),
+                              ),
+                              const SizedBox(height: 10),
+
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  _stepButton(
+                                    icon: Icons.remove,
+                                    accent: accent,
+                                    onTap: () => dsp.adjustVolume(-1),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF090D14),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: const Color(0xFF1C2638)),
+                                    ),
+                                    child: Text(
+                                      "STEP ${dsp.volume} / 29",
+                                      style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 1),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  _stepButton(
+                                    icon: Icons.add,
+                                    accent: accent,
+                                    onTap: () => dsp.adjustVolume(1),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // 2. Subwoofer & Sleep Timer Rack
+                      IntrinsicHeight(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(
+                              child: _glassCard(
+                                cardColor: dsp.activeCardBg,
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text("SUBWOOFER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                                        const SizedBox(height: 2),
+                                        Text("$curSub", style: TextStyle(color: accent, fontSize: 19, fontWeight: FontWeight.bold)),
+                                      ],
+                                    ),
+                                    _InPlacePopHorizontalSlider(
+                                      value: curSub.toDouble(),
+                                      min: 0,
+                                      max: 29,
+                                      divisions: 29,
+                                      accentColor: accent,
+                                      onChanged: (v) => setState(() => localSub = v.toInt()),
+                                      onChangeEnd: (v) {
+                                        setState(() => localSub = null);
+                                        dsp.sendDspValue("SUB", v.toInt());
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+
+                            Expanded(
+                              child: _glassCard(
+                                cardColor: dsp.activeCardBg,
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text("SLEEP TIMER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                                        Text(
+                                          _formatTime(dsp.sleepRemainingSec),
+                                          style: TextStyle(
+                                            color: dsp.sleepRemainingSec > 0 ? accent : const Color(0xFF546E7A),
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Wrap(
+                                      spacing: 5,
+                                      runSpacing: 5,
+                                      children: ["OFF", "15m", "30m", "60m"].map((t) {
+                                        final isSel = (t == "OFF" && dsp.sleepRemainingSec <= 0) || (dsp.sleepTimer == t && dsp.sleepRemainingSec > 0);
+                                        return GestureDetector(
+                                          onTap: () => dsp.sendDspValue("SLP", t),
+                                          child: AnimatedContainer(
+                                            duration: const Duration(milliseconds: 200),
+                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: isSel ? accent.withOpacity(0.18) : const Color(0xFF121824),
+                                              borderRadius: BorderRadius.circular(6),
+                                              border: Border.all(
+                                                color: isSel ? accent : const Color(0xFF1C2638),
+                                                width: isSel ? 1.4 : 1.0,
+                                              ),
+                                            ),
+                                            child: Text(
+                                              t,
+                                              style: TextStyle(
+                                                color: isSel ? accent : const Color(0xFF78909C),
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      }).toList(),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // 3. Parametric EQ Card
+                      SizedBox(
+                        width: double.infinity,
+                        child: _glassCard(
+                          cardColor: dsp.activeCardBg,
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => setState(() => isEqExpanded = !isEqExpanded),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Icon(
+                                          isEqExpanded ? Icons.lock_open : Icons.lock_outline,
+                                          color: isEqExpanded ? accent : const Color(0xFF607D8B),
+                                          size: 14,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        const Text(
+                                          "PARAMETRIC EQUALIZER",
+                                          style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+                                        ),
+                                      ],
+                                    ),
+                                    Icon(
+                                      isEqExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                                      color: accent,
+                                      size: 18,
+                                    ),
+                                  ],
+                                ),
+                              ),
+
+                              const SizedBox(height: 8),
+                              Container(
+                                height: 60,
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0A0E17),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: const Color(0xFF162030)),
+                                ),
+                                child: CustomPaint(
+                                  painter: _EqCurvePainter(bass: curBass, mid: curMid, treble: curTreble, accent: accent),
+                                ),
+                              ),
+
+                              AnimatedCrossFade(
+                                duration: const Duration(milliseconds: 250),
+                                crossFadeState: isEqExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                                firstChild: const SizedBox(width: double.infinity),
+                                secondChild: Padding(
+                                  padding: const EdgeInsets.only(top: 12.0),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                    children: [
+                                      _StudioVerticalFader(
+                                        title: "BASS",
+                                        freq: dsp.bassCenter,
+                                        val: curBass,
+                                        accentColor: accent,
+                                        onDrag: (v) => setState(() => localBass = v),
+                                        onEnd: (v) {
+                                          setState(() => localBass = null);
+                                          dsp.sendDspValue("BAS", v);
+                                        },
+                                      ),
+                                      _StudioVerticalFader(
+                                        title: "MID",
+                                        freq: dsp.midCenter,
+                                        val: curMid,
+                                        accentColor: accent,
+                                        onDrag: (v) => setState(() => localMid = v),
+                                        onEnd: (v) {
+                                          setState(() => localMid = null);
+                                          dsp.sendDspValue("MID", v);
+                                        },
+                                      ),
+                                      _StudioVerticalFader(
+                                        title: "TREBLE",
+                                        freq: dsp.trebleCut,
+                                        val: curTreble,
+                                        accentColor: accent,
+                                        onDrag: (v) => setState(() => localTreble = v),
+                                        onEnd: (v) {
+                                          setState(() => localTreble = null);
+                                          dsp.sendDspValue("TRE", v);
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ],
+              ),
             ),
 
-            // --- 2. COMMAND-DRIVEN JUMPING PET ENGINE ---
-            const Positioned.fill(
-              child: ShimejiJumpingAssistantEngine(),
+            // Bottom Cyber Command Bar (Clean, Pet-free)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF090D15),
+                border: Border(top: BorderSide(color: Color(0xFF1C2638), width: 1.2)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.terminal, color: accent, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _commandController,
+                      style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.bold),
+                      decoration: InputDecoration(
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        hintText: "Enter Command: 'set volume 10', 'mute'...",
+                        hintStyle: const TextStyle(color: Color(0xFF455A64), fontSize: 11),
+                        filled: true,
+                        fillColor: const Color(0xFF0F1522),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: const BorderSide(color: Color(0xFF1E283B)),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: accent),
+                        ),
+                      ),
+                      onSubmitted: (val) {
+                        if (val.trim().isNotEmpty) {
+                          dsp.dispatchTextCommand(val);
+                          _commandController.clear();
+                        }
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: Icon(Icons.send_rounded, color: accent, size: 20),
+                    onPressed: () {
+                      if (_commandController.text.trim().isNotEmpty) {
+                        dsp.dispatchTextCommand(_commandController.text);
+                        _commandController.clear();
+                      }
+                    },
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -1177,273 +1242,8 @@ class _StudioScreenState extends State<StudioScreen> {
   }
 }
 
-// =========================================================================
-// 4. SHIMEJI JUMPING ASSISTANT (COMMAND PARSER & BUTTON BOUNCE ENGINE)
-// =========================================================================
-enum AssistantMode { patrol, runningToButton, jumpingOnButton, dragged, falling }
-
-class ShimejiJumpingAssistantEngine extends StatefulWidget {
-  const ShimejiJumpingAssistantEngine({super.key});
-
-  @override
-  State<ShimejiJumpingAssistantEngine> createState() => _ShimejiJumpingAssistantEngineState();
-}
-
-class _ShimejiJumpingAssistantEngineState extends State<ShimejiJumpingAssistantEngine> {
-  double _posX = 120.0;
-  double _posY = 100.0;
-  double _vy = 0.0;
-  final double _gravity = 1.2;
-
-  AssistantMode _mode = AssistantMode.falling;
-  int _walkFrame = 1;
-  double _facingDirection = 1.0;
-  Timer? _engineTicker;
-  int _animPacerCounter = 0;
-
-  // Jump Trampoline Physics
-  double _jumpDy = 0.0;
-  double _jumpVy = -8.0;
-  bool _isAirborne = false;
-
-  double _patrolLeft = 35.0;
-  double _patrolRight = 320.0;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final size = MediaQuery.of(context).size;
-      setState(() {
-        _posX = (size.width / 2) - 60;
-        _posY = size.height * 0.15;
-      });
-      _startAssistantEngine();
-    });
-  }
-
-  void _startAssistantEngine() {
-    _engineTicker?.cancel();
-
-    _engineTicker = Timer.periodic(const Duration(milliseconds: 16), (timer) {
-      if (!mounted || _mode == AssistantMode.dragged) return;
-
-      final dsp = context.read<DspWebSocketService>();
-      final screenSize = MediaQuery.of(context).size;
-      const double petSize = 120.0;
-      final double roofY = screenSize.height * 0.16;
-
-      // Master Card Button Coordinates (Minus Button = Left, Plus Button = Right)
-      final double minusBtnX = (screenSize.width / 2) - 100;
-      final double plusBtnX = (screenSize.width / 2) + 20;
-      final double btnY = screenSize.height * 0.31; // Just on top of step buttons
-
-      // --- 1. ACTIVE MISSION DETECTOR ---
-      if (dsp.activeMission == PetCommandType.setVolumeTarget) {
-        if (_mode != AssistantMode.runningToButton && _mode != AssistantMode.jumpingOnButton) {
-          _mode = AssistantMode.runningToButton;
-        }
-      }
-
-      // --- STATE: RUNNING TO BUTTON ---
-      if (_mode == AssistantMode.runningToButton) {
-        final bool needPlus = dsp.targetVolumeLevel > dsp.volume;
-        final bool needMinus = dsp.targetVolumeLevel < dsp.volume;
-
-        if (!needPlus && !needMinus) {
-          // Already on target volume
-          dsp.completeMission();
-          _mode = AssistantMode.patrol;
-          return;
-        }
-
-        final double targetX = needPlus ? plusBtnX : minusBtnX;
-        final double targetY = btnY;
-
-        _animPacerCounter++;
-        if (_animPacerCounter >= 4) {
-          _animPacerCounter = 0;
-          _walkFrame = (_walkFrame % 10) + 1;
-        }
-
-        final dx = targetX - _posX;
-        final dy = targetY - _posY;
-        _facingDirection = dx >= 0 ? 1.0 : -1.0;
-
-        if (dx.abs() > 4) _posX += dx.sign * 4.2;
-        if (dy.abs() > 4) _posY += dy.sign * 4.2;
-
-        if (dx.abs() <= 6 && dy.abs() <= 6) {
-          _posX = targetX;
-          _posY = targetY;
-          _mode = AssistantMode.jumpingOnButton;
-          _jumpDy = 0.0;
-          _jumpVy = -8.0;
-          _isAirborne = true;
-        }
-        setState(() {});
-      }
-
-      // --- STATE: JUMPING ON BUTTON (TRAMPOLINE BOUNCE) ---
-      else if (_mode == AssistantMode.jumpingOnButton) {
-        final bool needPlus = dsp.targetVolumeLevel > dsp.volume;
-        final bool needMinus = dsp.targetVolumeLevel < dsp.volume;
-
-        if (!needPlus && !needMinus) {
-          // Target Achieved -> Return to patrol
-          dsp.completeMission();
-          _jumpDy = 0.0;
-          _mode = AssistantMode.patrol;
-          return;
-        }
-
-        // Jump trajectory physics
-        _jumpDy += _jumpVy;
-        _jumpVy += 0.8; // Gravity pulling pet down onto button
-
-        if (_jumpDy >= 0.0) {
-          // Landed on button: trigger volume change!
-          _jumpDy = 0.0;
-          _jumpVy = -8.5; // Rebound upwards
-
-          if (needPlus) {
-            dsp.adjustVolume(1);
-          } else if (needMinus) {
-            dsp.adjustVolume(-1);
-          }
-        }
-
-        _walkFrame = _jumpDy < -6.0 ? 3 : 1;
-        setState(() {});
-      }
-
-      // --- STATE: FALLING ---
-      else if (_mode == AssistantMode.falling) {
-        _vy = (_vy + _gravity).clamp(0.0, 22.0);
-        double nextY = _posY + _vy;
-        double footY = nextY + petSize;
-
-        final double landingLedge = screenSize.height * 0.28;
-        if (footY >= landingLedge && _posY <= landingLedge) {
-          _posY = landingLedge - petSize;
-          _vy = 0.0;
-          _mode = AssistantMode.patrol;
-          _patrolLeft = 35.0;
-          _patrolRight = screenSize.width - petSize - 35.0;
-        } else {
-          _posY = nextY;
-          if (_posY >= screenSize.height - petSize - 80) {
-            _posY = screenSize.height - petSize - 80;
-            _vy = 0.0;
-            _mode = AssistantMode.patrol;
-            _patrolLeft = 20.0;
-            _patrolRight = screenSize.width - petSize - 20.0;
-          }
-        }
-        setState(() {});
-      }
-
-      // --- STATE: PATROL WALKING ---
-      else if (_mode == AssistantMode.patrol) {
-        _animPacerCounter++;
-        if (_animPacerCounter >= 10) {
-          _animPacerCounter = 0;
-          _walkFrame = (_walkFrame % 10) + 1;
-        }
-
-        _posX += (_facingDirection * 1.8);
-
-        if (_posX >= _patrolRight) {
-          _posX = _patrolRight;
-          _facingDirection = -1.0;
-        } else if (_posX <= _patrolLeft) {
-          _posX = _patrolLeft;
-          _facingDirection = 1.0;
-        }
-        setState(() {});
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _engineTicker?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final dsp = context.watch<DspWebSocketService>();
-
-    return Positioned(
-      left: _posX,
-      top: _posY + _jumpDy,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Speech Bubble Alert
-          if (dsp.petSpeechBubble.isNotEmpty)
-            Container(
-              margin: const EdgeInsets.only(bottom: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: const Color(0xFF0F172A),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: dsp.activeAccent, width: 1.2),
-                boxShadow: [
-                  BoxShadow(color: dsp.activeAccent.withOpacity(0.35), blurRadius: 8)
-                ],
-              ),
-              child: Text(
-                dsp.petSpeechBubble,
-                style: TextStyle(color: dsp.activeAccent, fontSize: 10, fontWeight: FontWeight.bold),
-              ),
-            ),
-
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanStart: (_) {
-              setState(() {
-                _mode = AssistantMode.dragged;
-                _jumpDy = 0.0;
-                _vy = 0.0;
-              });
-            },
-            onPanUpdate: (details) {
-              setState(() {
-                _posX = (_posX + details.delta.dx).clamp(0.0, size.width - 120.0);
-                _posY = (_posY + details.delta.dy).clamp(0.0, size.height - 120.0);
-              });
-            },
-            onPanEnd: (details) {
-              setState(() {
-                _mode = AssistantMode.falling;
-                _vy = (details.velocity.pixelsPerSecond.dy / 90).clamp(0.0, 10.0);
-              });
-            },
-            child: Transform(
-              alignment: Alignment.center,
-              transform: Matrix4.diagonal3Values(_facingDirection, 1.0, 1.0),
-              child: SizedBox(
-                width: 120,
-                height: 120,
-                child: Image.asset(
-                  'assets/pet/walk_$_walkFrame.png',
-                  fit: BoxFit.contain,
-                  gaplessPlayback: true,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ==========================================================
-// 5. INDIVIDUAL POP-ZOOM VERTICAL FADER
+// 4. INDIVIDUAL POP-ZOOM VERTICAL FADER
 // ==========================================================
 class _StudioVerticalFader extends StatefulWidget {
   final String title;
@@ -1571,7 +1371,7 @@ class _StudioVerticalFaderState extends State<_StudioVerticalFader> {
 }
 
 // ==========================================
-// 6. IN-PLACE POP-ZOOM HORIZONTAL SLIDER
+// 5. IN-PLACE POP-ZOOM HORIZONTAL SLIDER
 // ==========================================
 class _InPlacePopHorizontalSlider extends StatefulWidget {
   final double value;
@@ -1635,7 +1435,7 @@ class _InPlacePopHorizontalSliderState extends State<_InPlacePopHorizontalSlider
 }
 
 // ==========================================
-// 7. REAL-TIME EQUALIZER CURVE PAINTER
+// 6. REAL-TIME EQUALIZER CURVE PAINTER
 // ==========================================
 class _EqCurvePainter extends CustomPainter {
   final int bass, mid, treble;
@@ -1688,7 +1488,7 @@ class _EqCurvePainter extends CustomPainter {
 }
 
 // =========================================================
-// 8. COMPACT ROTARY DIAL
+// 7. COMPACT ROTARY DIAL
 // =========================================================
 class RotaryDial extends StatefulWidget {
   final double size;
