@@ -7,14 +7,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ==========================================
-// 1. WEBSOCKET & DSP SERVICE
+// 1. WEBSOCKET & DYNAMIC DSP SERVICE
 // ==========================================
 class DspWebSocketService extends ChangeNotifier {
   WebSocketChannel? _channel;
   bool isConnected = false;
   String espIp = "192.168.4.1";
 
-  Color neonAccent = const Color(0xFF00F2FE);
+  // Dynamic Theme Colors (Synchronized with Display Hardware)
+  Color colorCore = const Color(0xFF0B2B26);   // Spectrum Center & Glow
+  Color colorTip = const Color(0xFF8EB69B);    // Spectrum Rounded Ends
+  Color colorAccent = const Color(0xFFDAF1DE); // Text, Values & Highlights
+  Color colorRail = const Color(0xFF235347);   // Borders, Dividers & Cards
 
   bool isNightModeManual = false;
   bool isNightScheduleEnabled = false;
@@ -40,32 +44,26 @@ class DspWebSocketService extends ChangeNotifier {
     return isNightModeManual;
   }
 
-  Color get activeAccent => isNightModeActive ? const Color(0xFF7A6843) : neonAccent;
-  Color get activeBackground => isNightModeActive ? const Color(0xFF000000) : const Color(0xFF070A0F);
-  Color get activeCardBg => isNightModeActive ? const Color(0xFF080808) : const Color(0xFF101622);
+  Color get activeAccent => isNightModeActive ? const Color(0xFF7A6843) : colorAccent;
+  Color get activeBackground => isNightModeActive ? const Color(0xFF000000) : const Color(0xFF04070B);
+  Color get activeCardBg => isNightModeActive 
+      ? const Color(0xFF080808) 
+      : Color.alphaBlend(colorCore.withOpacity(0.35), const Color(0xFF0C111A));
+  Color get activeRail => isNightModeActive ? const Color(0xFF2B2418) : colorRail;
 
-  static const List<Color> availableThemes = [
-    Color(0xFF00F2FE),
-    Color(0xFF00E676),
-    Color(0xFFFFB300),
-    Color(0xFFFF007F),
-    Color(0xFFD500F9),
-    Color(0xFFFF3D00),
-  ];
-
-  // Core Audio States
+  // Audio Core States
   int volume = 4;
-  int subVolume = 20;
+  int subVolume = 16;
   int bass = 0;
   int mid = 0;
   int treble = 4;
-  int balance = 0; // -15 (Left) to +15 (Right)
-  String currentSource = "BT AUDIO";
+  int balance = 0;
+  String currentSource = "BT"; // "BT", "AUX", "SD_Card"
   String sleepTimer = "OFF";
   int sleepRemainingSec = 0;
   Timer? _localCountDownTimer;
 
-  // Filter & Hardware Tuning States
+  // Filter & Hardware States
   int gain = 0;
   int loudness = 0;
   String loudnessFreq = "400 Hz";
@@ -78,17 +76,32 @@ class DspWebSocketService extends ChangeNotifier {
 
   String midCenter = "1.0 kHz";
   String midQ = "1.0";
-
   String trebleCut = "12.5 kHz";
+
+  // Helper Color Converters
+  static Color _hexToColor(String hex) {
+    hex = hex.replaceAll("#", "").trim();
+    if (hex.length == 6) hex = "FF$hex";
+    return Color(int.tryParse(hex, radix: 16) ?? 0xFF00F2FE);
+  }
+
+  static String _colorToHex(Color c) {
+    return c.value.toRadixString(16).substring(2).toUpperCase();
+  }
 
   Future<void> initIpAndConnect() async {
     final prefs = await SharedPreferences.getInstance();
     espIp = prefs.getString('saved_esp_ip') ?? "192.168.4.1";
 
-    final savedColorVal = prefs.getInt('saved_neon_color');
-    if (savedColorVal != null) {
-      neonAccent = Color(savedColorVal);
-    }
+    final cCoreVal = prefs.getInt('saved_clr_core');
+    final cTipVal = prefs.getInt('saved_clr_tip');
+    final cAccVal = prefs.getInt('saved_clr_acc');
+    final cRailVal = prefs.getInt('saved_clr_rail');
+
+    if (cCoreVal != null) colorCore = Color(cCoreVal);
+    if (cTipVal != null) colorTip = Color(cTipVal);
+    if (cAccVal != null) colorAccent = Color(cAccVal);
+    if (cRailVal != null) colorRail = Color(cRailVal);
 
     isNightModeManual = prefs.getBool('night_manual') ?? false;
     isNightScheduleEnabled = prefs.getBool('night_sched_enabled') ?? false;
@@ -104,9 +117,7 @@ class DspWebSocketService extends ChangeNotifier {
   void _startScheduleChecker() {
     _scheduleCheckerTimer?.cancel();
     _scheduleCheckerTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (isNightScheduleEnabled) {
-        notifyListeners();
-      }
+      if (isNightScheduleEnabled) notifyListeners();
     });
   }
 
@@ -119,11 +130,23 @@ class DspWebSocketService extends ChangeNotifier {
     connect(espIp);
   }
 
-  Future<void> setNeonTheme(Color newColor) async {
-    neonAccent = newColor;
+  // Live Bidirectional Color Sync (App & Display)
+  Future<void> applySynchronizedTheme(Color core, Color tip, Color accent, Color rail) async {
+    colorCore = core;
+    colorTip = tip;
+    colorAccent = accent;
+    colorRail = rail;
     notifyListeners();
+
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('saved_neon_color', newColor.value);
+    await prefs.setInt('saved_clr_core', core.value);
+    await prefs.setInt('saved_clr_tip', tip.value);
+    await prefs.setInt('saved_clr_acc', accent.value);
+    await prefs.setInt('saved_clr_rail', rail.value);
+
+    // Send to ESP32 Hardware Display
+    final cmd = "CLR:${_colorToHex(core)},${_colorToHex(tip)},${_colorToHex(accent)},${_colorToHex(rail)}";
+    sendCommand(cmd);
   }
 
   Future<void> setNightModeManual(bool val) async {
@@ -192,6 +215,13 @@ class DspWebSocketService extends ChangeNotifier {
     sendCommand("$key:$value");
   }
 
+  // 3-Way Mode Switcher Hook
+  void setSource(String sourceName) {
+    currentSource = sourceName;
+    notifyListeners();
+    sendDspValue("INP", sourceName);
+  }
+
   void adjustVolume(int delta) {
     final target = (volume + delta).clamp(0, 29);
     if (target != volume) {
@@ -241,6 +271,7 @@ class DspWebSocketService extends ChangeNotifier {
     }
   }
 
+  // Hardware Display Palette & DSP Sync Parser
   void _parseSync(String payload) {
     if (!payload.startsWith("SYNC:")) return;
     final clean = payload.replaceFirst("SYNC:", "");
@@ -276,6 +307,11 @@ class DspWebSocketService extends ChangeNotifier {
           sleepRemainingSec = int.tryParse(v) ?? 0;
           _startLocalCountdown();
           break;
+        // Hardware Color Synchronization
+        case "CLR_CORE": colorCore = _hexToColor(v); break;
+        case "CLR_TIP": colorTip = _hexToColor(v); break;
+        case "CLR_ACC": colorAccent = _hexToColor(v); break;
+        case "CLR_RAIL": colorRail = _hexToColor(v); break;
       }
     }
     notifyListeners();
@@ -352,6 +388,100 @@ class _StudioScreenState extends State<StudioScreen> {
     return "${hour12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $period";
   }
 
+  // 3-Way Mode Switcher Sheet (BT, AUX, SD_Card)
+  void _showSourceSelectorSheet(BuildContext context, DspWebSocketService dsp) {
+    final accent = dsp.activeAccent;
+    final rail = dsp.activeRail;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: dsp.isNightModeActive ? const Color(0xFF060606) : const Color(0xFF0A0F17),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final sources = [
+          {"id": "BT", "title": "BLUETOOTH AUDIO", "sub": "Direct Wireless Stream A2DP", "icon": Icons.bluetooth_audio_rounded},
+          {"id": "AUX", "title": "AUXILIARY IN", "sub": "Analog Line Input SE2 Direct", "icon": Icons.cable_rounded},
+          {"id": "SD_Card", "title": "SD CARD PLAYER", "sub": "Hardware Studio Direct Playback", "icon": Icons.sd_storage_rounded},
+        ];
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "SELECT AUDIO INPUT SOURCE",
+                    style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                    onPressed: () => Navigator.pop(ctx),
+                  )
+                ],
+              ),
+              const SizedBox(height: 12),
+              ...sources.map((s) {
+                final isSel = dsp.currentSource == s["id"];
+                return GestureDetector(
+                  onTap: () {
+                    dsp.setSource(s["id"] as String);
+                    Navigator.pop(ctx);
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: isSel ? accent.withOpacity(0.14) : const Color(0xFF101724),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSel ? accent : rail.withOpacity(0.5),
+                        width: isSel ? 1.6 : 1.0,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(s["icon"] as IconData, color: isSel ? accent : const Color(0xFF78909C), size: 22),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                s["title"] as String,
+                                style: TextStyle(
+                                  color: isSel ? accent : Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                s["sub"] as String,
+                                style: const TextStyle(color: Color(0xFF607D8B), fontSize: 9.5),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isSel) Icon(Icons.check_circle_rounded, color: accent, size: 18),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   void _showIpDialog(BuildContext context, DspWebSocketService dsp) {
     final controller = TextEditingController(text: dsp.espIp);
 
@@ -363,7 +493,7 @@ class _StudioScreenState extends State<StudioScreen> {
           backgroundColor: const Color(0xFF101622),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color: Color(0xFF1C2638)),
+            side: BorderSide(color: dsp.activeRail),
           ),
           title: const Text(
             "ESP32 IP SETTINGS",
@@ -378,7 +508,7 @@ class _StudioScreenState extends State<StudioScreen> {
               hintStyle: const TextStyle(color: Color(0xFF546E7A)),
               filled: true,
               fillColor: const Color(0xFF0A0E17),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: Color(0xFF1C2638))),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeRail)),
               focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
             ),
           ),
@@ -405,6 +535,7 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
+  // Settings & Synchronized Palette Editor Sheet
   void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
     showModalBottomSheet(
       context: context,
@@ -417,8 +548,56 @@ class _StudioScreenState extends State<StudioScreen> {
         return StatefulBuilder(
           builder: (context, setModalState) {
             final accent = dsp.activeAccent;
+            final rail = dsp.activeRail;
+
+            // Curated Studio Grade Palettes that apply to BOTH Display and App
+            final List<Map<String, dynamic>> studioPalettes = [
+              {
+                "name": "Nordic Sage",
+                "core": const Color(0xFF0B2B26),
+                "tip": const Color(0xFF8EB69B),
+                "accent": const Color(0xFFDAF1DE),
+                "rail": const Color(0xFF235347),
+              },
+              {
+                "name": "Cyber Ice Blue",
+                "core": const Color(0xFF002244),
+                "tip": const Color(0xFF00E5FF),
+                "accent": const Color(0xFFE0F7FA),
+                "rail": const Color(0xFF005588),
+              },
+              {
+                "name": "Vintage Amber",
+                "core": const Color(0xFF381A00),
+                "tip": const Color(0xFFFFB300),
+                "accent": const Color(0xFFFFF3E0),
+                "rail": const Color(0xFF6D3900),
+              },
+              {
+                "name": "Stealth Obsidian",
+                "core": const Color(0xFF141820),
+                "tip": const Color(0xFF94A3B8),
+                "accent": const Color(0xFFF8FAFC),
+                "rail": const Color(0xFF334155),
+              },
+              {
+                "name": "Deep Crimson",
+                "core": const Color(0xFF33080E),
+                "tip": const Color(0xFFFF4D6D),
+                "accent": const Color(0xFFFFE5EC),
+                "rail": const Color(0xFF66101F),
+              },
+              {
+                "name": "Emerald Studio",
+                "core": const Color(0xFF062B19),
+                "tip": const Color(0xFF10B981),
+                "accent": const Color(0xFFD1FAE5),
+                "rail": const Color(0xFF0F5A36),
+              },
+            ];
+
             return Container(
-              height: MediaQuery.of(context).size.height * 0.88,
+              height: MediaQuery.of(context).size.height * 0.90,
               padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
               child: ListView(
                 physics: const BouncingScrollPhysics(),
@@ -438,13 +617,122 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 12),
 
+                  // Synchronized Display & App Theme Selector
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF090D14),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: rail),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.palette_rounded, color: accent, size: 18),
+                                const SizedBox(width: 8),
+                                const Text("HARDWARE DISPLAY & APP SYNC THEME", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: accent.withOpacity(0.16),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text("LIVE SYNC", style: TextStyle(color: accent, fontSize: 8.5, fontWeight: FontWeight.w900)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        const Text("Select a theme to instantly update Display & App together:", style: TextStyle(color: Color(0xFF78909C), fontSize: 9.5)),
+                        const SizedBox(height: 12),
+
+                        // Studio Theme Cards Grid
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            childAspectRatio: 2.8,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: studioPalettes.length,
+                          itemBuilder: (context, i) {
+                            final p = studioPalettes[i];
+                            final isSel = dsp.colorCore.value == (p["core"] as Color).value &&
+                                dsp.colorAccent.value == (p["accent"] as Color).value;
+
+                            return GestureDetector(
+                              onTap: () {
+                                dsp.applySynchronizedTheme(
+                                  p["core"] as Color,
+                                  p["tip"] as Color,
+                                  p["accent"] as Color,
+                                  p["rail"] as Color,
+                                );
+                                setModalState(() {});
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: isSel ? (p["accent"] as Color).withOpacity(0.15) : const Color(0xFF101724),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: isSel ? (p["accent"] as Color) : const Color(0xFF1E2A3A),
+                                    width: isSel ? 1.8 : 1.0,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 22,
+                                      height: 22,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [p["tip"] as Color, p["core"] as Color],
+                                        ),
+                                        border: Border.all(color: p["accent"] as Color, width: 1.5),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        p["name"] as String,
+                                        style: TextStyle(
+                                          color: isSel ? (p["accent"] as Color) : const Color(0xFFB0BEC5),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
                   // Night Stealth Card
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: const Color(0xFF090D14),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF1C2638)),
+                      border: Border.all(color: rail),
                     ),
                     child: Column(
                       children: [
@@ -517,47 +805,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Themes
-                  const Text("NEON GLOW THEME COLOR", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
-                  const SizedBox(height: 10),
-                  Opacity(
-                    opacity: dsp.isNightModeActive ? 0.35 : 1.0,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: DspWebSocketService.availableThemes.map((c) {
-                        final isSel = dsp.neonAccent.value == c.value;
-                        return GestureDetector(
-                          onTap: dsp.isNightModeActive ? null : () {
-                            dsp.setNeonTheme(c);
-                            setModalState(() {});
-                          },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: c,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: isSel ? Colors.white : Colors.transparent,
-                                width: isSel ? 3 : 1,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: c.withOpacity(isSel ? 0.6 : 0.2),
-                                  blurRadius: isSel ? 10 : 3,
-                                )
-                              ],
-                            ),
-                            child: isSel ? const Icon(Icons.check, color: Colors.black, size: 20) : null,
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                  const Divider(color: Color(0xFF1C2638), height: 26),
-
-                  // Speaker Balance Control
+                  // Speaker Balance
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -651,7 +899,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const SizedBox(height: 14),
 
-                  // Bass Controls (Center, Q, DC Mode)
+                  // Bass Controls
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -686,7 +934,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const SizedBox(height: 14),
 
-                  // Middle Controls (Center, Q)
+                  // Mid Controls
                   const Text("MIDDLE CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 8),
                   _buildOptionRow(["500 Hz", "1.0 kHz", "1.5 kHz", "2.5 kHz"], dsp.midCenter, accent, (opt) {
@@ -780,6 +1028,7 @@ class _StudioScreenState extends State<StudioScreen> {
   Widget build(BuildContext context) {
     final dsp = context.watch<DspWebSocketService>();
     final accent = dsp.activeAccent;
+    final rail = dsp.activeRail;
     final curSub = localSub ?? dsp.subVolume;
     final curBass = localBass ?? dsp.bass;
     final curMid = localMid ?? dsp.mid;
@@ -829,27 +1078,39 @@ class _StudioScreenState extends State<StudioScreen> {
                           decoration: BoxDecoration(
                             color: const Color(0xFF141C2B),
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFF1C2638)),
+                            border: Border.all(color: rail),
                           ),
                           child: Icon(Icons.tune, color: accent, size: 16),
                         ),
                       ),
                       const SizedBox(width: 8),
+                      // 3-Mode Source Selector Button
                       GestureDetector(
-                        onTap: () {
-                          final next = dsp.currentSource == "BT AUDIO" ? "AUX IN" : "BT AUDIO";
-                          dsp.sendDspValue("INP", next);
-                        },
+                        onTap: () => _showSourceSelectorSheet(context, dsp),
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                           decoration: BoxDecoration(
                             color: const Color(0xFF141C2B),
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: const Color(0xFF1C2638)),
+                            border: Border.all(color: rail),
                           ),
-                          child: Text(
-                            dsp.currentSource,
-                            style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.bold),
+                          child: Row(
+                            children: [
+                              Icon(
+                                dsp.currentSource == "BT" 
+                                    ? Icons.bluetooth_rounded 
+                                    : (dsp.currentSource == "AUX" ? Icons.cable_rounded : Icons.sd_storage_rounded),
+                                color: accent,
+                                size: 13,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                dsp.currentSource,
+                                style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(width: 2),
+                              Icon(Icons.arrow_drop_down, color: accent, size: 14),
+                            ],
                           ),
                         ),
                       ),
@@ -873,6 +1134,7 @@ class _StudioScreenState extends State<StudioScreen> {
                         width: double.infinity,
                         child: _glassCard(
                           cardColor: dsp.activeCardBg,
+                          borderColor: rail,
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.center,
@@ -898,6 +1160,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                   _stepButton(
                                     icon: Icons.remove,
                                     accent: accent,
+                                    borderColor: rail,
                                     onTap: () => dsp.adjustVolume(-1),
                                   ),
                                   const SizedBox(width: 14),
@@ -906,7 +1169,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                     decoration: BoxDecoration(
                                       color: const Color(0xFF090D14),
                                       borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: const Color(0xFF1C2638)),
+                                      border: Border.all(color: rail),
                                     ),
                                     child: Text(
                                       "STEP ${dsp.volume} / 29",
@@ -917,6 +1180,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                   _stepButton(
                                     icon: Icons.add,
                                     accent: accent,
+                                    borderColor: rail,
                                     onTap: () => dsp.adjustVolume(1),
                                   ),
                                 ],
@@ -935,6 +1199,7 @@ class _StudioScreenState extends State<StudioScreen> {
                             Expanded(
                               child: _glassCard(
                                 cardColor: dsp.activeCardBg,
+                                borderColor: rail,
                                 padding: const EdgeInsets.all(12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -969,6 +1234,7 @@ class _StudioScreenState extends State<StudioScreen> {
                             Expanded(
                               child: _glassCard(
                                 cardColor: dsp.activeCardBg,
+                                borderColor: rail,
                                 padding: const EdgeInsets.all(12),
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1003,7 +1269,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                               color: isSel ? accent.withOpacity(0.18) : const Color(0xFF121824),
                                               borderRadius: BorderRadius.circular(6),
                                               border: Border.all(
-                                                color: isSel ? accent : const Color(0xFF1C2638),
+                                                color: isSel ? accent : rail.withOpacity(0.6),
                                                 width: isSel ? 1.4 : 1.0,
                                               ),
                                             ),
@@ -1033,6 +1299,7 @@ class _StudioScreenState extends State<StudioScreen> {
                         width: double.infinity,
                         child: _glassCard(
                           cardColor: dsp.activeCardBg,
+                          borderColor: rail,
                           padding: const EdgeInsets.all(12),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1073,7 +1340,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                 decoration: BoxDecoration(
                                   color: const Color(0xFF0A0E17),
                                   borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(color: const Color(0xFF162030)),
+                                  border: Border.all(color: rail.withOpacity(0.5)),
                                 ),
                                 child: CustomPaint(
                                   painter: _EqCurvePainter(bass: curBass, mid: curMid, treble: curTreble, accent: accent),
@@ -1136,12 +1403,12 @@ class _StudioScreenState extends State<StudioScreen> {
               ),
             ),
 
-            // Bottom Cyber Command Bar (Clean, Pet-free)
+            // Bottom Cyber Command Bar
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              decoration: const BoxDecoration(
-                color: Color(0xFF090D15),
-                border: Border(top: BorderSide(color: Color(0xFF1C2638), width: 1.2)),
+              decoration: BoxDecoration(
+                color: const Color(0xFF090D15),
+                border: Border(top: BorderSide(color: rail, width: 1.2)),
               ),
               child: Row(
                 children: [
@@ -1160,7 +1427,7 @@ class _StudioScreenState extends State<StudioScreen> {
                         fillColor: const Color(0xFF0F1522),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
-                          borderSide: const BorderSide(color: Color(0xFF1E283B)),
+                          borderSide: BorderSide(color: rail.withOpacity(0.5)),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
@@ -1194,7 +1461,7 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  Widget _glassCard({required Widget child, required Color cardColor, EdgeInsetsGeometry padding = const EdgeInsets.all(14)}) {
+  Widget _glassCard({required Widget child, required Color cardColor, required Color borderColor, EdgeInsetsGeometry padding = const EdgeInsets.all(14)}) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: BackdropFilter(
@@ -1204,7 +1471,7 @@ class _StudioScreenState extends State<StudioScreen> {
           decoration: BoxDecoration(
             color: cardColor.withOpacity(0.75),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFF1C2638)),
+            border: Border.all(color: borderColor),
           ),
           child: child,
         ),
@@ -1212,7 +1479,7 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  Widget _stepButton({required IconData icon, required Color accent, required VoidCallback onTap}) {
+  Widget _stepButton({required IconData icon, required Color accent, required Color borderColor, required VoidCallback onTap}) {
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -1224,7 +1491,7 @@ class _StudioScreenState extends State<StudioScreen> {
           decoration: BoxDecoration(
             color: const Color(0xFF121824),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFF1E283B)),
+            border: Border.all(color: borderColor.withOpacity(0.6)),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.4),
