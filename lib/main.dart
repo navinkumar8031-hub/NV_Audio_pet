@@ -53,7 +53,7 @@ class DspWebSocketService extends ChangeNotifier {
 
   // Audio Core States
   int volume = 4;
-  int subVolume = 16;
+  int subVolume = 12;
   int bass = 0;
   int mid = 0;
   int treble = 4;
@@ -77,6 +77,42 @@ class DspWebSocketService extends ChangeNotifier {
   String midCenter = "1.0 kHz";
   String midQ = "1.0";
   String trebleCut = "12.5 kHz";
+
+  // Dedicated Setters for Instant Local State Persistence
+  void setVolume(int val) {
+    final target = val.clamp(0, 29);
+    volume = target;
+    notifyListeners();
+    sendDspValue("VOL", volume);
+  }
+
+  void setSubVolume(int val) {
+    final target = val.clamp(0, 29);
+    subVolume = target;
+    notifyListeners();
+    sendDspValue("SUB", subVolume);
+  }
+
+  void setBass(int val) {
+    final target = val.clamp(-15, 15);
+    bass = target;
+    notifyListeners();
+    sendDspValue("BAS", bass);
+  }
+
+  void setMid(int val) {
+    final target = val.clamp(-15, 15);
+    mid = target;
+    notifyListeners();
+    sendDspValue("MID", mid);
+  }
+
+  void setTreble(int val) {
+    final target = val.clamp(-15, 15);
+    treble = target;
+    notifyListeners();
+    sendDspValue("TRE", treble);
+  }
 
   // Helper Color Converters
   static Color _hexToColor(String hex) {
@@ -130,7 +166,6 @@ class DspWebSocketService extends ChangeNotifier {
     connect(espIp);
   }
 
-  // Live Bidirectional Color Sync (App & Display)
   Future<void> applySynchronizedTheme(Color core, Color tip, Color accent, Color rail) async {
     colorCore = core;
     colorTip = tip;
@@ -144,7 +179,6 @@ class DspWebSocketService extends ChangeNotifier {
     await prefs.setInt('saved_clr_acc', accent.value);
     await prefs.setInt('saved_clr_rail', rail.value);
 
-    // Send to ESP32 Hardware Display
     final cmd = "CLR:${_colorToHex(core)},${_colorToHex(tip)},${_colorToHex(accent)},${_colorToHex(rail)}";
     sendCommand(cmd);
   }
@@ -215,7 +249,6 @@ class DspWebSocketService extends ChangeNotifier {
     sendCommand("$key:$value");
   }
 
-  // 3-Way Mode Switcher Hook
   void setSource(String sourceName) {
     currentSource = sourceName;
     notifyListeners();
@@ -225,9 +258,7 @@ class DspWebSocketService extends ChangeNotifier {
   void adjustVolume(int delta) {
     final target = (volume + delta).clamp(0, 29);
     if (target != volume) {
-      volume = target;
-      notifyListeners();
-      sendDspValue("VOL", volume);
+      setVolume(target);
     }
   }
 
@@ -238,17 +269,13 @@ class DspWebSocketService extends ChangeNotifier {
     if (match != null) {
       final target = int.tryParse(match.group(3) ?? "")?.clamp(0, 29);
       if (target != null) {
-        volume = target;
-        notifyListeners();
-        sendDspValue("VOL", target);
+        setVolume(target);
         return;
       }
     }
 
     if (clean.contains("mute")) {
-      volume = 0;
-      notifyListeners();
-      sendDspValue("VOL", 0);
+      setVolume(0);
       return;
     }
 
@@ -271,7 +298,6 @@ class DspWebSocketService extends ChangeNotifier {
     }
   }
 
-  // Hardware Display Palette & DSP Sync Parser
   void _parseSync(String payload) {
     if (!payload.startsWith("SYNC:")) return;
     final clean = payload.replaceFirst("SYNC:", "");
@@ -307,7 +333,6 @@ class DspWebSocketService extends ChangeNotifier {
           sleepRemainingSec = int.tryParse(v) ?? 0;
           _startLocalCountdown();
           break;
-        // Hardware Color Synchronization
         case "CLR_CORE": colorCore = _hexToColor(v); break;
         case "CLR_TIP": colorTip = _hexToColor(v); break;
         case "CLR_ACC": colorAccent = _hexToColor(v); break;
@@ -388,7 +413,6 @@ class _StudioScreenState extends State<StudioScreen> {
     return "${hour12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $period";
   }
 
-  // 3-Way Mode Switcher Sheet (BT, AUX, SD_Card)
   void _showSourceSelectorSheet(BuildContext context, DspWebSocketService dsp) {
     final accent = dsp.activeAccent;
     final rail = dsp.activeRail;
@@ -535,7 +559,6 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  // Settings & Synchronized Palette Editor Sheet
   void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
     showModalBottomSheet(
       context: context,
@@ -550,7 +573,6 @@ class _StudioScreenState extends State<StudioScreen> {
             final accent = dsp.activeAccent;
             final rail = dsp.activeRail;
 
-            // Curated Studio Grade Palettes that apply to BOTH Display and App
             final List<Map<String, dynamic>> studioPalettes = [
               {
                 "name": "Nordic Sage",
@@ -617,7 +639,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // Synchronized Display & App Theme Selector
+                  // Synchronized Theme Selector
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -652,7 +674,6 @@ class _StudioScreenState extends State<StudioScreen> {
                         const Text("Select a theme to instantly update Display & App together:", style: TextStyle(color: Color(0xFF78909C), fontSize: 9.5)),
                         const SizedBox(height: 12),
 
-                        // Studio Theme Cards Grid
                         GridView.builder(
                           shrinkWrap: true,
                           physics: const NeverScrollableScrollPhysics(),
@@ -899,7 +920,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const SizedBox(height: 14),
 
-                  // Bass Controls
+                  // Bass Center & Q
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -934,7 +955,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const SizedBox(height: 14),
 
-                  // Mid Controls
+                  // Middle Center & Q
                   const Text("MIDDLE CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 8),
                   _buildOptionRow(["500 Hz", "1.0 kHz", "1.5 kHz", "2.5 kHz"], dsp.midCenter, accent, (opt) {
@@ -951,7 +972,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const SizedBox(height: 14),
 
-                  // Treble Controls
+                  // Treble Cut
                   const Text("TREBLE CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
                   const SizedBox(height: 8),
                   _buildOptionRow(["10.0 kHz", "12.5 kHz", "15.0 kHz", "17.5 kHz"], dsp.trebleCut, accent, (opt) {
@@ -1084,7 +1105,6 @@ class _StudioScreenState extends State<StudioScreen> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      // 3-Mode Source Selector Button
                       GestureDetector(
                         onTap: () => _showSourceSelectorSheet(context, dsp),
                         child: Container(
@@ -1120,7 +1140,7 @@ class _StudioScreenState extends State<StudioScreen> {
               ),
             ),
 
-            // Main Controls Scrollable Rack
+            // Main Controls Rack
             Expanded(
               child: Center(
                 child: SingleChildScrollView(
@@ -1150,7 +1170,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                 accentColor: accent,
                                 isNightMode: dsp.isNightModeActive,
                                 onChanged: (_) {},
-                                onChangeEnd: (v) => dsp.sendDspValue("VOL", v),
+                                onChangeEnd: (v) => dsp.setVolume(v),
                               ),
                               const SizedBox(height: 10),
 
@@ -1221,8 +1241,8 @@ class _StudioScreenState extends State<StudioScreen> {
                                       accentColor: accent,
                                       onChanged: (v) => setState(() => localSub = v.toInt()),
                                       onChangeEnd: (v) {
+                                        dsp.setSubVolume(v.toInt());
                                         setState(() => localSub = null);
-                                        dsp.sendDspValue("SUB", v.toInt());
                                       },
                                     ),
                                   ],
@@ -1363,8 +1383,8 @@ class _StudioScreenState extends State<StudioScreen> {
                                         accentColor: accent,
                                         onDrag: (v) => setState(() => localBass = v),
                                         onEnd: (v) {
+                                          dsp.setBass(v);
                                           setState(() => localBass = null);
-                                          dsp.sendDspValue("BAS", v);
                                         },
                                       ),
                                       _StudioVerticalFader(
@@ -1374,8 +1394,8 @@ class _StudioScreenState extends State<StudioScreen> {
                                         accentColor: accent,
                                         onDrag: (v) => setState(() => localMid = v),
                                         onEnd: (v) {
+                                          dsp.setMid(v);
                                           setState(() => localMid = null);
-                                          dsp.sendDspValue("MID", v);
                                         },
                                       ),
                                       _StudioVerticalFader(
@@ -1385,8 +1405,8 @@ class _StudioScreenState extends State<StudioScreen> {
                                         accentColor: accent,
                                         onDrag: (v) => setState(() => localTreble = v),
                                         onEnd: (v) {
+                                          dsp.setTreble(v);
                                           setState(() => localTreble = null);
-                                          dsp.sendDspValue("TRE", v);
                                         },
                                       ),
                                     ],
