@@ -419,7 +419,7 @@ class _StudioScreenState extends State<StudioScreen> {
   String _formatTimeOfDay(int h, int m) {
     final period = h >= 12 ? "PM" : "AM";
     final hour12 = h % 12 == 0 ? 12 : h % 12;
-    return "${hour12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}$period";
+    return "${hour12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $period";
   }
 
   void _showColorGridPicker(BuildContext context, String title, Color currentColor, ValueChanged<Color> onSelected) {
@@ -441,4 +441,780 @@ class _StudioScreenState extends State<StudioScreen> {
           backgroundColor: const Color(0xFF0D1420),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
-            side: const BorderSide(color
+            side: const BorderSide(color: Color(0xFF1E2A3A)),
+          ),
+          title: Text(
+            "SELECT $title",
+            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+          ),
+          content: SizedBox(
+            width: 280,
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.center,
+              children: swatch.map((c) {
+                final isSel = c.value == currentColor.value;
+                return GestureDetector(
+                  onTap: () {
+                    onSelected(c);
+                    Navigator.pop(ctx);
+                  },
+                  child: Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: c,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isSel ? Colors.white : Colors.black26,
+                        width: isSel ? 3.0 : 1.2,
+                      ),
+                      boxShadow: isSel
+                          ? [BoxShadow(color: c.withOpacity(0.6), blurRadius: 10, spreadRadius: 2)]
+                          : null,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showSourceSelectorSheet(BuildContext context, DspWebSocketService dsp) {
+    final accent = dsp.activeAccent;
+    final rail = dsp.activeRail;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: dsp.isNightModeActive ? const Color(0xFF060606) : const Color(0xFF0A0F17),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final sources = [
+          {"id": "BT", "title": "BLUETOOTH AUDIO", "sub": "Direct Wireless Stream A2DP", "icon": Icons.bluetooth_audio_rounded},
+          {"id": "AUX", "title": "AUXILIARY IN", "sub": "Analog Line Input SE2 Direct", "icon": Icons.cable_rounded},
+          {"id": "SD_Card", "title": "SD CARD PLAYER", "sub": "Hardware Studio Direct Playback", "icon": Icons.sd_storage_rounded},
+        ];
+
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "SELECT AUDIO INPUT SOURCE",
+                    style: TextStyle(color: accent, fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                    onPressed: () => Navigator.pop(ctx),
+                  )
+                ],
+              ),
+              const SizedBox(height: 12),
+              ...sources.map((s) {
+                final isSel = dsp.currentSource == s["id"];
+                return GestureDetector(
+                  onTap: () {
+                    dsp.setSource(s["id"] as String);
+                    Navigator.pop(ctx);
+                  },
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: isSel ? accent.withOpacity(0.14) : const Color(0xFF101724),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isSel ? accent : rail.withOpacity(0.5),
+                        width: isSel ? 1.6 : 1.0,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(s["icon"] as IconData, color: isSel ? accent : const Color(0xFF78909C), size: 22),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                s["title"] as String,
+                                style: TextStyle(
+                                  color: isSel ? accent : Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                s["sub"] as String,
+                                style: const TextStyle(color: Color(0xFF607D8B), fontSize: 9.5),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isSel) Icon(Icons.check_circle_rounded, color: accent, size: 18),
+                      ],
+                    ),
+                  ),
+                );
+              }).toList(),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showIpDialog(BuildContext context, DspWebSocketService dsp) {
+    final controller = TextEditingController(text: dsp.espIp);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF101622),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: dsp.activeRail),
+          ),
+          title: const Text(
+            "ESP32 IP SETTINGS",
+            style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+          ),
+          content: TextField(
+            controller: controller,
+            style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              hintText: "e.g. 192.168.4.1",
+              hintStyle: const TextStyle(color: Color(0xFF546E7A)),
+              filled: true,
+              fillColor: const Color(0xFF0A0E17),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeRail)),
+              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("CANCEL", style: TextStyle(color: Color(0xFF78909C))),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: dsp.activeAccent,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () {
+                dsp.updateIp(controller.text);
+                Navigator.pop(ctx);
+              },
+              child: const Text("CONNECT", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
+    Color tempCore = dsp.colorCore;
+    Color tempTip = dsp.colorTip;
+    Color tempAccent = dsp.colorAccent;
+    Color tempRail = dsp.colorRail;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: dsp.isNightModeActive ? const Color(0xFF050505) : const Color(0xFF0B1017),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (modalCtx, setModalState) {
+            final accent = dsp.activeAccent;
+            final rail = dsp.activeRail;
+
+            final List<Map<String, dynamic>> studioPalettes = [
+              {
+                "name": "Nordic Sage",
+                "core": const Color(0xFF0B2B26),
+                "tip": const Color(0xFF8EB69B),
+                "accent": const Color(0xFFDAF1DE),
+                "rail": const Color(0xFF235347),
+              },
+              {
+                "name": "Cyber Ice Blue",
+                "core": const Color(0xFF002244),
+                "tip": const Color(0xFF00E5FF),
+                "accent": const Color(0xFFE0F7FA),
+                "rail": const Color(0xFF005588),
+              },
+              {
+                "name": "Amber Tube",
+                "core": const Color(0xFF381A00),
+                "tip": const Color(0xFFFFB300),
+                "accent": const Color(0xFFFFF3E0),
+                "rail": const Color(0xFF6D3900),
+              },
+              {
+                "name": "Stealth Obsidian",
+                "core": const Color(0xFF141820),
+                "tip": const Color(0xFF94A3B8),
+                "accent": const Color(0xFFF8FAFC),
+                "rail": const Color(0xFF334155),
+              },
+              {
+                "name": "Deep Crimson",
+                "core": const Color(0xFF33080E),
+                "tip": const Color(0xFFFF4D6D),
+                "accent": const Color(0xFFFFE5EC),
+                "rail": const Color(0xFF66101F),
+              },
+              {
+                "name": "Emerald Studio",
+                "core": const Color(0xFF062B19),
+                "tip": const Color(0xFF10B981),
+                "accent": const Color(0xFFD1FAE5),
+                "rail": const Color(0xFF0F5A36),
+              },
+              {
+                "name": "Amethyst Violet",
+                "core": const Color(0xFF240A34),
+                "tip": const Color(0xFFD500F9),
+                "accent": const Color(0xFFF3E5F5),
+                "rail": const Color(0xFF5E1B7D),
+              },
+              {
+                "name": "Neon Sunset",
+                "core": const Color(0xFF331000),
+                "tip": const Color(0xFFFF6D00),
+                "accent": const Color(0xFFFFE0B2),
+                "rail": const Color(0xFF7A2E00),
+              },
+            ];
+
+            return Container(
+              height: MediaQuery.of(context).size.height * 0.92,
+              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+              child: ListView(
+                physics: const BouncingScrollPhysics(),
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        "STUDIO DSP & HARDWARE CONTROLS",
+                        style: TextStyle(color: accent, fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        onPressed: () => Navigator.pop(ctx),
+                      )
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // ==========================================
+                  // 1. CUSTOM THEME BUILDER & PRESETS
+                  // ==========================================
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF090D14),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: rail),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.palette_rounded, color: accent, size: 18),
+                                const SizedBox(width: 8),
+                                const Text("THEME SELECTOR & LIVE SYNC", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: accent.withOpacity(0.16),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text("ESP32 SYNC", style: TextStyle(color: accent, fontSize: 8.5, fontWeight: FontWeight.w900)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        const Text("Quick Presets (Display & App):", style: TextStyle(color: Color(0xFF78909C), fontSize: 9.5)),
+                        const SizedBox(height: 8),
+
+                        GridView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            childAspectRatio: 2.8,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: studioPalettes.length,
+                          itemBuilder: (context, i) {
+                            final p = studioPalettes[i];
+                            final isSel = dsp.colorCore.value == (p["core"] as Color).value &&
+                                dsp.colorAccent.value == (p["accent"] as Color).value;
+
+                            return GestureDetector(
+                              onTap: () {
+                                tempCore = p["core"] as Color;
+                                tempTip = p["tip"] as Color;
+                                tempAccent = p["accent"] as Color;
+                                tempRail = p["rail"] as Color;
+                                dsp.applySynchronizedTheme(tempCore, tempTip, tempAccent, tempRail);
+                                setModalState(() {});
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: isSel ? (p["accent"] as Color).withOpacity(0.15) : const Color(0xFF101724),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: isSel ? (p["accent"] as Color) : const Color(0xFF1E2A3A),
+                                    width: isSel ? 1.8 : 1.0,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 22,
+                                      height: 22,
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        gradient: LinearGradient(
+                                          begin: Alignment.topCenter,
+                                          end: Alignment.bottomCenter,
+                                          colors: [p["tip"] as Color, p["core"] as Color],
+                                        ),
+                                        border: Border.all(color: p["accent"] as Color, width: 1.5),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        p["name"] as String,
+                                        style: TextStyle(
+                                          color: isSel ? (p["accent"] as Color) : const Color(0xFFB0BEC5),
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 14),
+                        const Divider(color: Color(0xFF1C2638), height: 1),
+                        const SizedBox(height: 12),
+
+                        // Custom Theme Studio Picker
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              "CUSTOM THEME STUDIO",
+                              style: TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.bold, letterSpacing: 1),
+                            ),
+                            Text("TAP SLOTS TO CHOOSE", style: TextStyle(color: accent, fontSize: 8.5, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _buildColorSlot("ACCENT", tempAccent, () {
+                              _showColorGridPicker(context, "ACCENT COLOR", tempAccent, (c) {
+                                setModalState(() => tempAccent = c);
+                              });
+                            }),
+                            _buildColorSlot("TIP END", tempTip, () {
+                              _showColorGridPicker(context, "TIP COLOR", tempTip, (c) {
+                                setModalState(() => tempTip = c);
+                              });
+                            }),
+                            _buildColorSlot("CORE GLOW", tempCore, () {
+                              _showColorGridPicker(context, "CORE COLOR", tempCore, (c) {
+                                setModalState(() => tempCore = c);
+                              });
+                            }),
+                            _buildColorSlot("BORDER RAIL", tempRail, () {
+                              _showColorGridPicker(context, "RAIL COLOR", tempRail, (c) {
+                                setModalState(() => tempRail = c);
+                              });
+                            }),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Apply Custom Theme Button
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: accent,
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            ),
+                            onPressed: () {
+                              dsp.applySynchronizedTheme(tempCore, tempTip, tempAccent, tempRail);
+                              setModalState(() {});
+                            },
+                            child: const Text(
+                              "APPLY & SYNC TO HARDWARE",
+                              style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w900, letterSpacing: 1.2),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // ==========================================
+                  // 2. HARDWARE AUDIO & ANALYZER TOGGLES
+                  // ==========================================
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF090D14),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: rail),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.touch_app_rounded, color: accent, size: 18),
+                                const SizedBox(width: 8),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text("TOUCH AUDIO FEEDBACK", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                    const SizedBox(height: 2),
+                                    const Text("TDA7419 Hardware Click on Tap", style: TextStyle(color: Color(0xFF607D8B), fontSize: 9)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            Switch(
+                              value: dsp.isBeepEnabled,
+                              activeColor: accent,
+                              onChanged: (val) {
+                                setModalState(() => dsp.isBeepEnabled = val);
+                                dsp.sendDspValue("BEEP", val ? 1 : 0);
+                              },
+                            ),
+                          ],
+                        ),
+                        const Divider(color: Color(0xFF1C2638), height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.equalizer_rounded, color: accent, size: 18),
+                                const SizedBox(width: 8),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text("TRUE RTA SPECTRUM", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                    const SizedBox(height: 2),
+                                    const Text("Pre-Tone Source Tap (Flat RTA)", style: TextStyle(color: Color(0xFF607D8B), fontSize: 9)),
+                                  ],
+                                ),
+                              ],
+                            ),
+                            Switch(
+                              value: dsp.isRtaPreTone,
+                              activeColor: accent,
+                              onChanged: (val) {
+                                setModalState(() => dsp.isRtaPreTone = val);
+                                dsp.sendDspValue("RTA", val ? 1 : 0);
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Night Stealth Card
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF090D14),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: rail),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.nightlight_round, color: dsp.isNightModeActive ? const Color(0xFF7A6843) : const Color(0xFF78909C), size: 18),
+                                const SizedBox(width: 8),
+                                const Text("NIGHT STEALTH MODE", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                            Switch(
+                              value: dsp.isNightModeManual,
+                              activeColor: const Color(0xFF7A6843),
+                              onChanged: (val) {
+                                dsp.setNightModeManual(val);
+                                setModalState(() {});
+                              },
+                            ),
+                          ],
+                        ),
+                        const Divider(color: Color(0xFF1C2638), height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text("AUTO TIME SCHEDULE", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                            Switch(
+                              value: dsp.isNightScheduleEnabled,
+                              activeColor: const Color(0xFF7A6843),
+                              onChanged: (val) {
+                                dsp.setNightSchedule(val, dsp.nightStartHour, dsp.nightStartMinute, dsp.nightEndHour, dsp.nightEndMinute);
+                                setModalState(() {});
+                              },
+                            ),
+                          ],
+                        ),
+                        if (dsp.isNightScheduleEnabled) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: [
+                              _timeButton("START", dsp.nightStartHour, dsp.nightStartMinute, () async {
+                                final picked = await showTimePicker(
+                                  context: context,
+                                  initialTime: TimeOfDay(hour: dsp.nightStartHour, minute: dsp.nightStartMinute),
+                                );
+                                if (picked != null) {
+                                  dsp.setNightSchedule(true, picked.hour, picked.minute, dsp.nightEndHour, dsp.nightEndMinute);
+                                  setModalState(() {});
+                                }
+                              }),
+                              const Icon(Icons.arrow_forward, color: Color(0xFF546E7A), size: 16),
+                              _timeButton("END", dsp.nightEndHour, dsp.nightEndMinute, () async {
+                                final picked = await showTimePicker(
+                                  context: context,
+                                  initialTime: TimeOfDay(hour: dsp.nightEndHour, minute: dsp.nightEndMinute),
+                                );
+                                if (picked != null) {
+                                  dsp.setNightSchedule(true, dsp.nightStartHour, dsp.nightStartMinute, picked.hour, picked.minute);
+                                  setModalState(() {});
+                                }
+                              }),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // ==========================================
+                  // 3. STAGING & BALANCE
+                  // ==========================================
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("SPEAKER BALANCE (L / R)", style: TextStyle(color: Color(0xFF78909C), fontSize: 11, fontWeight: FontWeight.bold)),
+                      Text(
+                        dsp.balance == 0 ? "CENTER" : (dsp.balance < 0 ? "L ${dsp.balance.abs()}" : "R ${dsp.balance}"),
+                        style: TextStyle(color: accent, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: dsp.balance.toDouble(),
+                    min: -15,
+                    max: 15,
+                    divisions: 30,
+                    activeColor: accent,
+                    inactiveColor: const Color(0xFF1E283B),
+                    onChanged: (v) => setModalState(() => dsp.balance = v.toInt()),
+                    onChangeEnd: (v) => dsp.sendDspValue("BAL", v.toInt()),
+                  ),
+
+                  // Front / Rear Fader
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("FRONT / REAR FADER (F / R)", style: TextStyle(color: Color(0xFF78909C), fontSize: 11, fontWeight: FontWeight.bold)),
+                      Text(
+                        dsp.fader == 0 ? "CENTER" : (dsp.fader > 0 ? "FRONT +${dsp.fader}" : "REAR +${dsp.fader.abs()}"),
+                        style: TextStyle(color: accent, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: dsp.fader.toDouble(),
+                    min: -15,
+                    max: 15,
+                    divisions: 30,
+                    activeColor: accent,
+                    inactiveColor: const Color(0xFF1E283B),
+                    onChanged: (v) => setModalState(() => dsp.fader = v.toInt()),
+                    onChangeEnd: (v) => dsp.sendDspValue("FAD", v.toInt()),
+                  ),
+                  const SizedBox(height: 6),
+
+                  // ==========================================
+                  // 4. GAIN & LOUDNESS
+                  // ==========================================
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("INPUT PRE-AMP GAIN", style: TextStyle(color: Color(0xFF78909C), fontSize: 11, fontWeight: FontWeight.bold)),
+                      Text("+${dsp.gain} dB", style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Slider(
+                    value: dsp.gain.toDouble(),
+                    min: 0,
+                    max: 15,
+                    divisions: 15,
+                    activeColor: accent,
+                    inactiveColor: const Color(0xFF1E283B),
+                    onChanged: (v) => setModalState(() => dsp.gain = v.toInt()),
+                    onChangeEnd: (v) => dsp.sendDspValue("GAIN", v.toInt()),
+                  ),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("LOUDNESS ATTENUATION", style: TextStyle(color: Color(0xFF78909C), fontSize: 11, fontWeight: FontWeight.bold)),
+                      Text("LVL ${dsp.loudness}", style: TextStyle(color: accent, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Slider(
+                    value: dsp.loudness.toDouble(),
+                    min: 0,
+                    max: 15,
+                    divisions: 15,
+                    activeColor: accent,
+                    inactiveColor: const Color(0xFF1E283B),
+                    onChanged: (v) => setModalState(() => dsp.loudness = v.toInt()),
+                    onChangeEnd: (v) => dsp.sendDspValue("LOUD", v.toInt()),
+                  ),
+
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("LOUDNESS CENTER FREQ", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                      Row(
+                        children: [
+                          const Text("HI-BOOST", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                          Switch(
+                            value: dsp.isLoudnessHighBoost,
+                            activeColor: accent,
+                            onChanged: (val) {
+                              setModalState(() => dsp.isLoudnessHighBoost = val);
+                              dsp.sendDspValue("LDHB", val ? 1 : 0);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  _buildOptionRow(["400 Hz", "800 Hz", "2.4 kHz"], dsp.loudnessFreq, accent, (opt) {
+                    setModalState(() => dsp.loudnessFreq = opt);
+                    dsp.sendDspValue("LDF", opt);
+                  }),
+                  const Divider(color: Color(0xFF1C2638), height: 24),
+
+                  // ==========================================
+                  // 5. CROSSOVERS & SUB PHASE
+                  // ==========================================
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("SUBWOOFER PHASE INVERSION", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      Row(
+                        children: [
+                          Text(dsp.isSubPhaseInverted ? "180° INVERTED" : "0° NORMAL", style: TextStyle(color: accent, fontSize: 10, fontWeight: FontWeight.bold)),
+                          const SizedBox(width: 4),
+                          Switch(
+                            value: dsp.isSubPhaseInverted,
+                            activeColor: accent,
+                            onChanged: (val) {
+                              setModalState(() => dsp.isSubPhaseInverted = val);
+                              dsp.sendDspValue("PHASE", val ? 1 : 0);
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+
+                  const Text("SUBWOOFER CUTOFF (LPF)", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  const SizedBox(height: 8),
+                  _buildOptionRow(["Flat", "80 Hz", "120 Hz", "160 Hz"], dsp.subCutoff, accent, (opt) {
+                    setModalState(() => dsp.subCutoff = opt);
+                    dsp.sendDspValue("SUBCUT", opt);
+                  }),
+                  const SizedBox(height: 14),
+
+                  const Text("SATELLITE HIGH-PASS (HPF)", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                  const SizedBox(height: 8),
+                  _buildOptionRow(["Flat", "80 Hz", "120 Hz", "160 Hz"], dsp.hpfCutoff, accent, (opt) {
+                    setModalState(() => dsp.hpfCutoff = opt);
+                    dsp.sendDspValue("HPF", opt);
+                  }),
+                  const SizedBox(height: 14),
+
+                  // Bass Center & Q
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("BASS CENTER FREQUENCY", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                      Row(
+                        children: [
+                          const Text("DC MODE (SHELVING)", style: TextStyle(color: Color(0xFF78909C), fontSize: 9, fontWeight: FontWeight.bold)),
+                          Switch(
+                            value: dsp.isBassDcMode,
+                            activeColor: accent,
+                            onChanged: (val) {
+                              setModal
