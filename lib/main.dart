@@ -67,6 +67,7 @@ class DspWebSocketService extends ChangeNotifier {
   String currentSource = "BT"; 
   String sleepTimer = "OFF";
   int sleepRemainingSec = 0;
+  bool isSystemSleeping = false;    // System Sleeping State Flag
   Timer? _localCountDownTimer;
 
   // Filter & Hardware States
@@ -98,6 +99,13 @@ class DspWebSocketService extends ChangeNotifier {
     sendDspValue("SUB", subVolume);
   }
 
+  void adjustSubVolume(int delta) {
+    final target = (subVolume + delta).clamp(0, 29);
+    if (target != subVolume) {
+      setSubVolume(target);
+    }
+  }
+
   void setBass(int val) {
     final target = val.clamp(-15, 15);
     bass = target;
@@ -117,6 +125,31 @@ class DspWebSocketService extends ChangeNotifier {
     treble = target;
     notifyListeners();
     sendDspValue("TRE", treble);
+  }
+
+  // Sleep Timer Controller with Instant Cancel & Wake
+  void setSleepTimerOption(String opt) {
+    if (opt == "OFF") {
+      _localCountDownTimer?.cancel();
+      sleepRemainingSec = 0;
+      sleepTimer = "OFF";
+      isSystemSleeping = false;
+      notifyListeners();
+      sendDspValue("SLP", "OFF");
+    } else {
+      sleepTimer = opt;
+      isSystemSleeping = false;
+      notifyListeners();
+      sendDspValue("SLP", opt);
+    }
+  }
+
+  void wakeSystem() {
+    isSystemSleeping = false;
+    sleepTimer = "OFF";
+    sleepRemainingSec = 0;
+    notifyListeners();
+    sendDspValue("SLP", "WAKE");
   }
 
   static Color _hexToColor(String hex) {
@@ -288,14 +321,17 @@ class DspWebSocketService extends ChangeNotifier {
 
   void _startLocalCountdown() {
     _localCountDownTimer?.cancel();
-    if (sleepRemainingSec > 0) {
+    if (sleepRemainingSec > 0 && !isSystemSleeping) {
       _localCountDownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (sleepRemainingSec > 0) {
+        if (sleepRemainingSec > 0 && !isSystemSleeping) {
           sleepRemainingSec--;
           notifyListeners();
         } else {
-          sleepTimer = "OFF";
           timer.cancel();
+          if (sleepRemainingSec <= 0) {
+            isSystemSleeping = true;
+            sleepTimer = "SLEEP";
+          }
           notifyListeners();
         }
       });
@@ -337,10 +373,21 @@ class DspWebSocketService extends ChangeNotifier {
         case "MIDQ": midQ = v; break;
         case "TRECUT": trebleCut = v; break;
         case "INP": currentSource = v; break;
-        case "SLP": sleepTimer = v; break;
+        case "SLP": 
+          sleepTimer = v;
+          isSystemSleeping = (v == "SLEEP");
+          if (v == "OFF") {
+            _localCountDownTimer?.cancel();
+            sleepRemainingSec = 0;
+          }
+          break;
         case "SLP_SEC": 
           sleepRemainingSec = int.tryParse(v) ?? 0;
-          _startLocalCountdown();
+          if (sleepRemainingSec > 0 && !isSystemSleeping) {
+            _startLocalCountdown();
+          } else {
+            _localCountDownTimer?.cancel();
+          }
           break;
         case "CLR_CORE": colorCore = _hexToColor(v); break;
         case "CLR_TIP": colorTip = _hexToColor(v); break;
@@ -569,7 +616,6 @@ class _StudioScreenState extends State<StudioScreen> {
   }
 
   void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
-    // ALWAYS FALSE: Modal khulte hi theme section by-default collapsed rahega
     bool isThemeExpanded = false;
 
     showModalBottomSheet(
@@ -585,7 +631,6 @@ class _StudioScreenState extends State<StudioScreen> {
             final accent = dsp.activeAccent;
             final rail = dsp.activeRail;
 
-            // 12 Curated Theme Presets
             final List<Map<String, dynamic>> studioPalettes = [
               {"name": "Nordic Sage", "core": const Color(0xFF0B2B26), "tip": const Color(0xFF8EB69B), "accent": const Color(0xFFDAF1DE), "rail": const Color(0xFF235347)},
               {"name": "Cyber Ice", "core": const Color(0xFF002244), "tip": const Color(0xFF00E5FF), "accent": const Color(0xFFE0F7FA), "rail": const Color(0xFF005588)},
@@ -601,7 +646,6 @@ class _StudioScreenState extends State<StudioScreen> {
               {"name": "Golden Master", "core": const Color(0xFF332900), "tip": const Color(0xFFFFD700), "accent": const Color(0xFFFFF8DC), "rail": const Color(0xFF665200)},
             ];
 
-            // 12 Custom Color Swatches for Instant One-Tap Theming
             final List<Color> customColors = [
               const Color(0xFF00E5FF), const Color(0xFF00E676), const Color(0xFFFFB300),
               const Color(0xFFFF5722), const Color(0xFFFF1744), const Color(0xFFF50057),
@@ -630,9 +674,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ==========================================
-                  // 1. COLLAPSIBLE THEME CARD (Always Collapsed By Default)
-                  // ==========================================
+                  // 1. COLLAPSIBLE THEME CARD
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -643,7 +685,6 @@ class _StudioScreenState extends State<StudioScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Clickable Header to Expand / Collapse
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -689,7 +730,6 @@ class _StudioScreenState extends State<StudioScreen> {
                           ),
                         ),
 
-                        // Unfolds ONLY when user taps header
                         if (isThemeExpanded) ...[
                           const SizedBox(height: 14),
                           const Divider(color: Color(0xFF1C2638), height: 1),
@@ -769,7 +809,6 @@ class _StudioScreenState extends State<StudioScreen> {
                           const Divider(color: Color(0xFF1C2638), height: 1),
                           const SizedBox(height: 10),
 
-                          // Custom On-Tap Color Creator
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
@@ -820,9 +859,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  // ==========================================
                   // 2. HARDWARE AUDIO & ANALYZER TOGGLES
-                  // ==========================================
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
@@ -971,9 +1008,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 14),
 
-                  // ==========================================
                   // 3. STAGING & BALANCE
-                  // ==========================================
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -995,7 +1030,6 @@ class _StudioScreenState extends State<StudioScreen> {
                     onChangeEnd: (v) => dsp.sendDspValue("BAL", v.toInt()),
                   ),
 
-                  // Front / Rear Fader
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1018,9 +1052,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   ),
                   const SizedBox(height: 6),
 
-                  // ==========================================
                   // 4. GAIN & LOUDNESS
-                  // ==========================================
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1082,9 +1114,7 @@ class _StudioScreenState extends State<StudioScreen> {
                   }),
                   const Divider(color: Color(0xFF1C2638), height: 24),
 
-                  // ==========================================
                   // 5. CROSSOVERS & SUB PHASE
-                  // ==========================================
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -1189,6 +1219,33 @@ class _StudioScreenState extends State<StudioScreen> {
           },
         );
       },
+    );
+  }
+
+  Widget _subStepButton({
+    required IconData icon,
+    required Color accent,
+    required Color borderColor,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 34,
+          height: 28,
+          decoration: BoxDecoration(
+            color: const Color(0xFF101724),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: borderColor.withOpacity(0.5)),
+          ),
+          child: Center(
+            child: Icon(icon, color: accent, size: 16),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1419,6 +1476,7 @@ class _StudioScreenState extends State<StudioScreen> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
+                            // SUBWOOFER CARD WITH DEDICATED -, + STEP BUTTONS
                             Expanded(
                               child: _glassCard(
                                 cardColor: dsp.activeCardBg,
@@ -1428,14 +1486,41 @@ class _StudioScreenState extends State<StudioScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      crossAxisAlignment: CrossAxisAlignment.center,
                                       children: [
-                                        const Text("SUBWOOFER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
-                                        const SizedBox(height: 2),
-                                        Text("$curSub", style: TextStyle(color: accent, fontSize: 19, fontWeight: FontWeight.bold)),
+                                        Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            const Text(
+                                              "SUBWOOFER",
+                                              style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold),
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text("$curSub", style: TextStyle(color: accent, fontSize: 19, fontWeight: FontWeight.bold)),
+                                          ],
+                                        ),
+                                        Row(
+                                          children: [
+                                            _subStepButton(
+                                              icon: Icons.remove,
+                                              accent: accent,
+                                              borderColor: rail,
+                                              onTap: () => dsp.adjustSubVolume(-1),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            _subStepButton(
+                                              icon: Icons.add,
+                                              accent: accent,
+                                              borderColor: rail,
+                                              onTap: () => dsp.adjustSubVolume(1),
+                                            ),
+                                          ],
+                                        ),
                                       ],
                                     ),
+                                    const SizedBox(height: 4),
                                     _InPlacePopHorizontalSlider(
                                       value: curSub.toDouble(),
                                       min: 0,
@@ -1454,63 +1539,105 @@ class _StudioScreenState extends State<StudioScreen> {
                             ),
                             const SizedBox(width: 10),
 
+                            // SLEEP TIMER / DYNAMIC WAKE CARD
                             Expanded(
-                              child: _glassCard(
-                                cardColor: dsp.activeCardBg,
-                                borderColor: rail,
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Text("SLEEP TIMER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
-                                        Text(
-                                          _formatTime(dsp.sleepRemainingSec),
-                                          style: TextStyle(
-                                            color: dsp.sleepRemainingSec > 0 ? accent : const Color(0xFF546E7A),
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w900,
-                                          ),
+                              child: dsp.isSystemSleeping
+                                  // 1. WAKE CARD (When System is Sleeping)
+                                  ? _glassCard(
+                                      cardColor: const Color(0xFF1E1600),
+                                      borderColor: Colors.amber.withOpacity(0.8),
+                                      padding: const EdgeInsets.all(10),
+                                      child: InkWell(
+                                        onTap: () => dsp.wakeSystem(),
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: Column(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            const Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                Icon(Icons.power_settings_new_rounded, color: Colors.amber, size: 14),
+                                                SizedBox(width: 5),
+                                                Text(
+                                                  "SYSTEM ASLEEP",
+                                                  style: TextStyle(color: Colors.amber, fontSize: 9.5, fontWeight: FontWeight.w900, letterSpacing: 0.8),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                                              decoration: BoxDecoration(
+                                                color: Colors.amber.withOpacity(0.2),
+                                                borderRadius: BorderRadius.circular(8),
+                                                border: Border.all(color: Colors.amber),
+                                              ),
+                                              child: const Text(
+                                                "TAP TO WAKE",
+                                                style: TextStyle(color: Colors.white, fontSize: 10.5, fontWeight: FontWeight.w900, letterSpacing: 1),
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Wrap(
-                                      spacing: 5,
-                                      runSpacing: 5,
-                                      children: ["OFF", "15m", "30m", "60m"].map((t) {
-                                        final isSel = (t == "OFF" && dsp.sleepRemainingSec <= 0) || (dsp.sleepTimer == t && dsp.sleepRemainingSec > 0);
-                                        return GestureDetector(
-                                          onTap: () => dsp.sendDspValue("SLP", t),
-                                          child: AnimatedContainer(
-                                            duration: const Duration(milliseconds: 200),
-                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-                                            decoration: BoxDecoration(
-                                              color: isSel ? accent.withOpacity(0.18) : const Color(0xFF121824),
-                                              borderRadius: BorderRadius.circular(6),
-                                              border: Border.all(
-                                                color: isSel ? accent : rail.withOpacity(0.6),
-                                                width: isSel ? 1.4 : 1.0,
+                                      ),
+                                    )
+                                  // 2. NORMAL SLEEP TIMER CARD
+                                  : _glassCard(
+                                      cardColor: dsp.activeCardBg,
+                                      borderColor: rail,
+                                      padding: const EdgeInsets.all(12),
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              const Text("SLEEP TIMER", style: TextStyle(color: Color(0xFF78909C), fontSize: 10, fontWeight: FontWeight.bold)),
+                                              Text(
+                                                _formatTime(dsp.sleepRemainingSec),
+                                                style: TextStyle(
+                                                  color: dsp.sleepRemainingSec > 0 ? accent : const Color(0xFF546E7A),
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w900,
+                                                ),
                                               ),
-                                            ),
-                                            child: Text(
-                                              t,
-                                              style: TextStyle(
-                                                color: isSel ? accent : const Color(0xFF78909C),
-                                                fontSize: 10,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
+                                            ],
                                           ),
-                                        );
-                                      }).toList(),
+                                          const SizedBox(height: 6),
+                                          Wrap(
+                                            spacing: 5,
+                                            runSpacing: 5,
+                                            children: ["OFF", "15m", "30m", "60m"].map((t) {
+                                              final isSel = (t == "OFF" && dsp.sleepRemainingSec <= 0) || (dsp.sleepTimer == t && dsp.sleepRemainingSec > 0);
+                                              return GestureDetector(
+                                                onTap: () => dsp.setSleepTimerOption(t),
+                                                child: AnimatedContainer(
+                                                  duration: const Duration(milliseconds: 200),
+                                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: isSel ? accent.withOpacity(0.18) : const Color(0xFF121824),
+                                                    borderRadius: BorderRadius.circular(6),
+                                                    border: Border.all(
+                                                      color: isSel ? accent : rail.withOpacity(0.6),
+                                                      width: isSel ? 1.4 : 1.0,
+                                                    ),
+                                                  ),
+                                                  child: Text(
+                                                    t,
+                                                    style: TextStyle(
+                                                      color: isSel ? accent : const Color(0xFF78909C),
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            }).toList(),
+                                          ),
+                                        ],
+                                      ),
                                     ),
-                                  ],
-                                ),
-                              ),
                             ),
                           ],
                         ),
