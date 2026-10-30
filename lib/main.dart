@@ -1,20 +1,33 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 // ==========================================
-// 1. WEBSOCKET & DYNAMIC DSP SERVICE
+// 1. BLUETOOTH BLE SERVICE (NORDIC UART)
 // ==========================================
-class DspWebSocketService extends ChangeNotifier {
-  WebSocketChannel? _channel;
+class DspBleService extends ChangeNotifier {
+  // Nordic UART Service (NUS) Standard UUIDs
+  static final Guid serviceUuid = Guid("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+  static final Guid rxUuid = Guid("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"); // App to ESP32 Write
+  static final Guid txUuid = Guid("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"); // ESP32 to App Notify
+
+  BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? _rxChar;
+  BluetoothCharacteristic? _txChar;
+  StreamSubscription<List<int>>? _notifySubscription;
+  StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
+
   bool isConnected = false;
-  String espIp = "192.168.4.1";
+  bool isScanning = false;
+  String connectedDeviceName = "NOT CONNECTED";
+  List<ScanResult> scanResults = [];
 
-  // Dynamic Theme Colors (Synchronized with ST7789 Display)
+  // Dynamic Theme Colors (ST7789 Display Sync)
   Color colorCore = const Color(0xFF0B2B26);   
   Color colorTip = const Color(0xFF8EB69B);    
   Color colorAccent = const Color(0xFFDAF1DE); 
@@ -58,16 +71,16 @@ class DspWebSocketService extends ChangeNotifier {
   int mid = 0;
   int treble = 4;
   int balance = 0;
-  int fader = 0;                   // Fader: -15 (Rear) to +15 (Front)
-  bool isSubPhaseInverted = false;   // Sub Phase: 0 deg / 180 deg
-  String hpfCutoff = "Flat";       // Satellite HPF: Flat, 80 Hz, 120 Hz, 160 Hz
-  bool isBeepEnabled = true;       // Hardware Touch Audio Click Feedback
-  bool isRtaPreTone = true;        // Pre-Tone True RTA Mode
+  int fader = 0;
+  bool isSubPhaseInverted = false;
+  String hpfCutoff = "Flat";
+  bool isBeepEnabled = true;
+  bool isRtaPreTone = true;
 
   String currentSource = "BT"; 
   String sleepTimer = "OFF";
   int sleepRemainingSec = 0;
-  bool isSystemSleeping = false;    // System Sleeping State Flag
+  bool isSystemSleeping = false;
   Timer? _localCountDownTimer;
 
   // Filter & Hardware States
@@ -84,6 +97,9 @@ class DspWebSocketService extends ChangeNotifier {
   String midCenter = "1.0 kHz";
   String midQ = "1.0";
   String trebleCut = "12.5 kHz";
+
+  // MTU Incoming String Buffer
+  String _rxBuffer = "";
 
   void setVolume(int val) {
     final target = val.clamp(0, 29);
@@ -127,7 +143,6 @@ class DspWebSocketService extends ChangeNotifier {
     sendDspValue("TRE", treble);
   }
 
-  // Sleep Timer Controller with Instant Cancel & Wake
   void setSleepTimerOption(String opt) {
     if (opt == "OFF") {
       _localCountDownTimer?.cancel();
@@ -162,9 +177,8 @@ class DspWebSocketService extends ChangeNotifier {
     return c.value.toRadixString(16).substring(2).toUpperCase();
   }
 
-  Future<void> initIpAndConnect() async {
+  Future<void> initBleAndAutoConnect() async {
     final prefs = await SharedPreferences.getInstance();
-    espIp = prefs.getString('saved_esp_ip') ?? "192.168.4.1";
 
     final cCoreVal = prefs.getInt('saved_clr_core');
     final cTipVal = prefs.getInt('saved_clr_tip');
@@ -184,7 +198,19 @@ class DspWebSocketService extends ChangeNotifier {
     nightEndMinute = prefs.getInt('night_end_m') ?? 0;
 
     _startScheduleChecker();
-    connect(espIp);
+
+    // Auto-reconnect to last saved device or scan for "Naveen_Audio_System"
+    final savedRemoteId = prefs.getString('saved_ble_remote_id');
+    if (savedRemoteId != null && savedRemoteId.isNotEmpty) {
+      try {
+        final d = BluetoothDevice.fromId(savedRemoteId);
+        connectToDevice(d);
+      } catch (_) {
+        startScan();
+      }
+    } else {
+      startScan();
+    }
   }
 
   void _startScheduleChecker() {
@@ -194,13 +220,135 @@ class DspWebSocketService extends ChangeNotifier {
     });
   }
 
-  Future<void> updateIp(String newIp) async {
-    if (newIp.trim().isEmpty) return;
-    espIp = newIp.trim();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('saved_esp_ip', espIp);
-    _channel?.sink.close();
-    connect(espIp);
+  // ==========================================
+  // BLE SCANNING & CONNECTION
+  // ==========================================
+  void startScan() async {
+    if (isScanning) return;
+    scanResults.clear();
+    isScanning = true;
+    notifyListeners();
+
+    FlutterBluePlus.scanResults.listen((results) {
+      scanResults = results;
+      notifyListeners();
+
+      for (var r in results) {
+        final devName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
+        if (devName == "Naveen_Audio_System" && !isConnected) {
+          stopScan();
+          connectToDevice(r.device);
+          break;
+        }
+      }
+    });
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
+    isScanning = false;
+    notifyListeners();
+  }
+
+  void stopScan() async {
+    await FlutterBluePlus.stopScan();
+    isScanning = false;
+    notifyListeners();
+  }
+
+  Future<void> connectToDevice(BluetoothDevice device) async {
+    try {
+      stopScan();
+      await device.connect(autoConnect: true, timeout: const Duration(seconds: 8));
+
+      connectedDevice = device;
+      final devName = device.platformName.isNotEmpty ? device.platformName : "Naveen_Audio_System";
+      connectedDeviceName = devName;
+
+      // Save ID for auto-connect
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('saved_ble_remote_id', device.remoteId.str);
+
+      _connectionSubscription?.cancel();
+      _connectionSubscription = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.connected) {
+          isConnected = true;
+        } else {
+          isConnected = false;
+          _rxChar = null;
+          _txChar = null;
+          notifyListeners();
+        }
+      });
+
+      try {
+        await device.requestMtu(512);
+      } catch (_) {}
+
+      final services = await device.discoverServices();
+      for (var s in services) {
+        if (s.uuid == serviceUuid) {
+          for (var c in s.characteristics) {
+            if (c.uuid == rxUuid) _rxChar = c;
+            if (c.uuid == txUuid) {
+              _txChar = c;
+              await _txChar!.setNotifyValue(true);
+              _notifySubscription?.cancel();
+              _notifySubscription = _txChar!.onValueReceived.listen((data) {
+                _handleIncomingBytes(data);
+              });
+            }
+          }
+        }
+      }
+
+      isConnected = true;
+      notifyListeners();
+      sendCommand("REQ_SYNC");
+    } catch (_) {
+      isConnected = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> disconnectDevice() async {
+    _notifySubscription?.cancel();
+    _connectionSubscription?.cancel();
+    await connectedDevice?.disconnect();
+    isConnected = false;
+    connectedDevice = null;
+    connectedDeviceName = "NOT CONNECTED";
+    notifyListeners();
+  }
+
+  void _handleIncomingBytes(List<int> bytes) {
+    final chunk = utf8.decode(bytes, allowMalformed: true);
+    _rxBuffer += chunk;
+
+    if (_rxBuffer.contains("\n")) {
+      final lines = _rxBuffer.split("\n");
+      for (int i = 0; i < lines.length - 1; i++) {
+        final line = lines[i].trim();
+        if (line.isNotEmpty) {
+          _parseSync(line);
+        }
+      }
+      _rxBuffer = lines.last;
+    } else if (_rxBuffer.contains(";") && _rxBuffer.endsWith(";")) {
+      _parseSync(_rxBuffer.trim());
+      _rxBuffer = "";
+    }
+  }
+
+  void sendCommand(String cmd) async {
+    if (isConnected && _rxChar != null) {
+      try {
+        final payload = utf8.encode("$cmd\n");
+        await _rxChar!.write(payload, withoutResponse: true);
+      } catch (_) {}
+    }
+  }
+
+  void sendDspValue(String key, dynamic value) {
+    sendCommand("$key:$value");
   }
 
   Future<void> applySynchronizedTheme(Color core, Color tip, Color accent, Color rail) async {
@@ -241,49 +389,6 @@ class DspWebSocketService extends ChangeNotifier {
     await prefs.setInt('night_start_m', startM);
     await prefs.setInt('night_end_h', endH);
     await prefs.setInt('night_end_m', endM);
-  }
-
-  void connect(String ip) {
-    espIp = ip.trim();
-    try {
-      _channel = WebSocketChannel.connect(Uri.parse('ws://$espIp/ws'));
-      isConnected = true;
-      notifyListeners();
-
-      _channel!.stream.listen(
-        (data) => _parseSync(data.toString()),
-        onDone: () {
-          isConnected = false;
-          notifyListeners();
-          _reconnect();
-        },
-        onError: (_) {
-          isConnected = false;
-          notifyListeners();
-          _reconnect();
-        },
-      );
-      sendCommand("REQ_SYNC");
-    } catch (_) {
-      isConnected = false;
-      notifyListeners();
-    }
-  }
-
-  void _reconnect() {
-    Timer(const Duration(seconds: 3), () {
-      if (!isConnected) connect(espIp);
-    });
-  }
-
-  void sendCommand(String cmd) {
-    if (isConnected && _channel != null) {
-      _channel!.sink.add(cmd);
-    }
-  }
-
-  void sendDspValue(String key, dynamic value) {
-    sendCommand("$key:$value");
   }
 
   void setSource(String sourceName) {
@@ -339,15 +444,15 @@ class DspWebSocketService extends ChangeNotifier {
   }
 
   void _parseSync(String payload) {
-    if (!payload.startsWith("SYNC:")) return;
-    final clean = payload.replaceFirst("SYNC:", "");
+    if (!payload.contains("SYNC:")) return;
+    final clean = payload.substring(payload.indexOf("SYNC:")).replaceFirst("SYNC:", "");
     final tokens = clean.split(";");
 
     for (var token in tokens) {
       final parts = token.split("=");
       if (parts.length != 2) continue;
-      final k = parts[0];
-      final v = parts[1];
+      final k = parts[0].trim();
+      final v = parts[1].trim();
 
       switch (k) {
         case "VOL": volume = int.tryParse(v) ?? volume; break;
@@ -402,6 +507,8 @@ class DspWebSocketService extends ChangeNotifier {
   void dispose() {
     _scheduleCheckerTimer?.cancel();
     _localCountDownTimer?.cancel();
+    _notifySubscription?.cancel();
+    _connectionSubscription?.cancel();
     super.dispose();
   }
 }
@@ -414,7 +521,7 @@ void main() {
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => DspWebSocketService()..initIpAndConnect()),
+        ChangeNotifierProvider(create: (_) => DspBleService()..initBleAndAutoConnect()),
       ],
       child: const MyApp(),
     ),
@@ -426,7 +533,7 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final dsp = context.watch<DspWebSocketService>();
+    final dsp = context.watch<DspBleService>();
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'NV Studio DSP',
@@ -469,7 +576,113 @@ class _StudioScreenState extends State<StudioScreen> {
     return "${hour12.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')} $period";
   }
 
-  void _showSourceSelectorSheet(BuildContext context, DspWebSocketService dsp) {
+  // BLE Scan & Connect Dialog
+  void _showBleScanDialog(BuildContext context, DspBleService dsp) {
+    dsp.startScan();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: AlertDialog(
+          backgroundColor: const Color(0xFF101622),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: BorderSide(color: dsp.activeRail),
+          ),
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "BLUETOOTH DSP CONTROLLER",
+                style: TextStyle(color: Color(0xFF90A4AE), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.2),
+              ),
+              IconButton(
+                icon: const Icon(Icons.refresh_rounded, color: Colors.white70, size: 20),
+                onPressed: () => dsp.startScan(),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 250,
+            child: Consumer<DspBleService>(
+              builder: (_, srv, __) {
+                if (srv.scanResults.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        CircularProgressIndicator(color: srv.activeAccent, strokeWidth: 2),
+                        const SizedBox(height: 12),
+                        const Text("Scanning for DSP Hardware...", style: TextStyle(color: Colors.white54, fontSize: 11)),
+                      ],
+                    ),
+                  );
+                }
+
+                return ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: srv.scanResults.length,
+                  itemBuilder: (context, i) {
+                    final r = srv.scanResults[i];
+                    final name = r.device.platformName.isNotEmpty 
+                        ? r.device.platformName 
+                        : (r.advertisementData.advName.isNotEmpty ? r.advertisementData.advName : "Unknown Device");
+                    final isTarget = name.contains("Naveen") || name.contains("Audio");
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      decoration: BoxDecoration(
+                        color: isTarget ? srv.activeAccent.withOpacity(0.12) : const Color(0xFF141C2B),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: isTarget ? srv.activeAccent : Colors.white12),
+                      ),
+                      child: ListTile(
+                        dense: true,
+                        leading: Icon(Icons.bluetooth_audio_rounded, color: isTarget ? srv.activeAccent : Colors.white54),
+                        title: Text(name, style: TextStyle(color: isTarget ? srv.activeAccent : Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                        subtitle: Text(r.device.remoteId.str, style: const TextStyle(color: Colors.white38, fontSize: 9)),
+                        trailing: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: isTarget ? srv.activeAccent : const Color(0xFF1E283B),
+                            foregroundColor: isTarget ? Colors.black : Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () {
+                            srv.connectToDevice(r.device);
+                            Navigator.pop(ctx);
+                          },
+                          child: const Text("PAIR", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900)),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+          actions: [
+            if (dsp.isConnected)
+              TextButton(
+                onPressed: () {
+                  dsp.disconnectDevice();
+                  Navigator.pop(ctx);
+                },
+                child: const Text("DISCONNECT", style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("CLOSE", style: TextStyle(color: Color(0xFF78909C), fontSize: 11)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSourceSelectorSheet(BuildContext context, DspBleService dsp) {
     final accent = dsp.activeAccent;
     final rail = dsp.activeRail;
 
@@ -562,60 +775,7 @@ class _StudioScreenState extends State<StudioScreen> {
     );
   }
 
-  void _showIpDialog(BuildContext context, DspWebSocketService dsp) {
-    final controller = TextEditingController(text: dsp.espIp);
-
-    showDialog(
-      context: context,
-      builder: (ctx) => BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-        child: AlertDialog(
-          backgroundColor: const Color(0xFF101622),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-            side: BorderSide(color: dsp.activeRail),
-          ),
-          title: const Text(
-            "ESP32 IP SETTINGS",
-            style: TextStyle(color: Color(0xFF90A4AE), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-          ),
-          content: TextField(
-            controller: controller,
-            style: TextStyle(color: dsp.activeAccent, fontWeight: FontWeight.bold),
-            keyboardType: TextInputType.number,
-            decoration: InputDecoration(
-              hintText: "e.g. 192.168.4.1",
-              hintStyle: const TextStyle(color: Color(0xFF546E7A)),
-              filled: true,
-              fillColor: const Color(0xFF0A0E17),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeRail)),
-              focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: dsp.activeAccent)),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text("CANCEL", style: TextStyle(color: Color(0xFF78909C))),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: dsp.activeAccent,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              onPressed: () {
-                dsp.updateIp(controller.text);
-                Navigator.pop(ctx);
-              },
-              child: const Text("CONNECT", style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showSettingsSheet(BuildContext context, DspWebSocketService dsp) {
+  void _showSettingsSheet(BuildContext context, DspBleService dsp) {
     bool isThemeExpanded = false;
 
     showModalBottomSheet(
@@ -631,7 +791,7 @@ class _StudioScreenState extends State<StudioScreen> {
             final accent = dsp.activeAccent;
             final rail = dsp.activeRail;
 
-            final List<Map<String, dynamic>> studioPalettes = [
+            final List> studioPalettes = [
               {"name": "Nordic Sage", "core": const Color(0xFF0B2B26), "tip": const Color(0xFF8EB69B), "accent": const Color(0xFFDAF1DE), "rail": const Color(0xFF235347)},
               {"name": "Cyber Ice", "core": const Color(0xFF002244), "tip": const Color(0xFF00E5FF), "accent": const Color(0xFFE0F7FA), "rail": const Color(0xFF005588)},
               {"name": "Amber Tube", "core": const Color(0xFF381A00), "tip": const Color(0xFFFFB300), "accent": const Color(0xFFFFF3E0), "rail": const Color(0xFF6D3900)},
@@ -714,7 +874,7 @@ class _StudioScreenState extends State<StudioScreen> {
                                       borderRadius: BorderRadius.circular(6),
                                     ),
                                     child: Text(
-                                      "ESP32 SYNC",
+                                      "BLE SYNC",
                                       style: TextStyle(color: accent, fontSize: 8.5, fontWeight: FontWeight.w900),
                                     ),
                                   ),
@@ -1307,7 +1467,7 @@ class _StudioScreenState extends State<StudioScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final dsp = context.watch<DspWebSocketService>();
+    final dsp = context.watch<DspBleService>();
     final accent = dsp.activeAccent;
     final rail = dsp.activeRail;
     final curSub = localSub ?? dsp.subVolume;
@@ -1327,7 +1487,7 @@ class _StudioScreenState extends State<StudioScreen> {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   GestureDetector(
-                    onTap: () => _showIpDialog(context, dsp),
+                    onTap: () => _showBleScanDialog(context, dsp),
                     child: Row(
                       children: [
                         Container(
@@ -1340,7 +1500,7 @@ class _StudioScreenState extends State<StudioScreen> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          "NV STUDIO [${dsp.espIp}]",
+                          "NV STUDIO [${dsp.isConnected ? 'BLE CONNECTED' : 'TAP TO CONNECT'}]",
                           style: const TextStyle(color: Color(0xFF90A4AE), fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.5),
                         ),
                         if (dsp.isNightModeActive) ...[
@@ -1542,7 +1702,7 @@ class _StudioScreenState extends State<StudioScreen> {
                             // SLEEP TIMER / DYNAMIC WAKE CARD
                             Expanded(
                               child: dsp.isSystemSleeping
-                                  // 1. WAKE CARD (When System is Sleeping)
+                                  // 1. WAKE CARD
                                   ? _glassCard(
                                       cardColor: const Color(0xFF1E1600),
                                       borderColor: Colors.amber.withOpacity(0.8),
