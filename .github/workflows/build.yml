@@ -32,7 +32,7 @@ jobs:
 
       - name: Configure Android, Permissions & Fix Plugin compileSdkVersion
         run: |
-          # 1. Update Kotlin in settings.gradle & root build.gradle
+          # 1. Update Kotlin version
           if [ -f android/settings.gradle ]; then
             sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.0.0"/g' android/settings.gradle
           fi
@@ -44,38 +44,45 @@ jobs:
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/<manifest [^>]*>/&\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"\/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"\/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"\/>/' $MANIFEST
 
-          # 3. Ensure app module uses compileSdk 34 and minSdk 21
-          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true
-          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true
+          # 3. Explicitly set compileSdk 34 and minSdk 21 in app build.gradle
+          APP_GRADLE="android/app/build.gradle"
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34\n        compileSdkVersion 34/g' $APP_GRADLE || true
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' $APP_GRADLE || true
+          sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 34/g' $APP_GRADLE || true
 
-          # 4. Inject global compileSdkVersion properties for flutter_blue_plus_android
+          # 4. Global properties for Android build tools
           echo "compileSdkVersion=34" >> android/gradle.properties
           echo "targetSdkVersion=34" >> android/gradle.properties
           echo "minSdkVersion=21" >> android/gradle.properties
+          echo "flutter.compileSdkVersion=34" >> android/gradle.properties
+          echo "flutter.minSdkVersion=21" >> android/gradle.properties
+          echo "flutter.targetSdkVersion=34" >> android/gradle.properties
 
-          # 5. Force compileSdkVersion on all subproject modules (Fixes substring() on null)
+          # 5. Fix plugins compileSdkVersion without touching already evaluated :app
           cat << 'EOF' >> android/build.gradle
 
           allprojects {
-              ext.compileSdkVersion = 34
-              ext.targetSdkVersion = 34
-              ext.minSdkVersion = 21
+              ext {
+                  compileSdkVersion = 34
+                  targetSdkVersion = 34
+                  minSdkVersion = 21
+              }
           }
 
-          subprojects {
-              project.plugins.whenPluginAdded { plugin ->
-                  if (plugin.class.name.startsWith("com.android.build.gradle")) {
-                      project.android {
+          subprojects { subproject ->
+              if (subproject.name != "app") {
+                  subproject.plugins.withId("com.android.library") {
+                      subproject.android {
                           compileSdkVersion 34
                       }
                   }
-              }
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      project.android {
-                          compileSdkVersion 34
+                  if (!subproject.state.executed) {
+                      subproject.afterEvaluate {
+                          if (subproject.hasProperty("android")) {
+                              subproject.android {
+                                  compileSdkVersion 34
+                              }
+                          }
                       }
                   }
               }
