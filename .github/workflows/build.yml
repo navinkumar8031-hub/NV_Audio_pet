@@ -30,8 +30,9 @@ jobs:
         run: |
           flutter create --platforms=android --org com.nvstudio --project-name nv_audio_pet .
 
-      - name: Upgrade Kotlin & Inject Bluetooth Permissions
+      - name: Configure Android, Permissions & Fix Plugin compileSdkVersion
         run: |
+          # 1. Update Kotlin in settings.gradle & root build.gradle
           if [ -f android/settings.gradle ]; then
             sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.0.0"/g' android/settings.gradle
           fi
@@ -39,10 +40,47 @@ jobs:
             sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "2.0.0"/g' android/build.gradle
           fi
 
+          # 2. Inject Bluetooth & Location Permissions into AndroidManifest.xml
           MANIFEST="android/app/src/main/AndroidManifest.xml"
-          
-          # Inject Bluetooth & Location Permissions into AndroidManifest.xml
           sed -i 's/<manifest [^>]*>/&\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"\/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"\/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"\/>/' $MANIFEST
+
+          # 3. Ensure app module uses compileSdk 34 and minSdk 21
+          sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' android/app/build.gradle || true
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle || true
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' android/app/build.gradle || true
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle || true
+
+          # 4. Inject global compileSdkVersion properties for flutter_blue_plus_android
+          echo "compileSdkVersion=34" >> android/gradle.properties
+          echo "targetSdkVersion=34" >> android/gradle.properties
+          echo "minSdkVersion=21" >> android/gradle.properties
+
+          # 5. Force compileSdkVersion on all subproject modules (Fixes substring() on null)
+          cat << 'EOF' >> android/build.gradle
+
+          allprojects {
+              ext.compileSdkVersion = 34
+              ext.targetSdkVersion = 34
+              ext.minSdkVersion = 21
+          }
+
+          subprojects {
+              project.plugins.whenPluginAdded { plugin ->
+                  if (plugin.class.name.startsWith("com.android.build.gradle")) {
+                      project.android {
+                          compileSdkVersion 34
+                      }
+                  }
+              }
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android {
+                          compileSdkVersion 34
+                      }
+                  }
+              }
+          }
+          EOF
 
       - name: Install Dependencies
         run: flutter pub get
