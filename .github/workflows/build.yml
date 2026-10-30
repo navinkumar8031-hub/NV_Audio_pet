@@ -30,7 +30,7 @@ jobs:
         run: |
           flutter create --platforms=android --org com.nvstudio --project-name nv_audio_pet .
 
-      - name: Upgrade Kotlin & Inject Internet Permissions
+      - name: Upgrade Kotlin & Inject Bluetooth Permissions
         run: |
           if [ -f android/settings.gradle ]; then
             sed -i 's/id "org.jetbrains.kotlin.android" version "[^"]*"/id "org.jetbrains.kotlin.android" version "2.0.0"/g' android/settings.gradle
@@ -41,11 +41,8 @@ jobs:
 
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           
-          # 1. Add Internet and Network State permissions
-          sed -i 's/<manifest [^>]*>/&\n    <uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"\/>/' $MANIFEST
-          
-          # 2. Allow ws:// HTTP Cleartext on Local ESP32 Network
-          sed -i 's/<application/<application android:usesCleartextTraffic="true"/g' $MANIFEST
+          # Inject Bluetooth & Location Permissions into AndroidManifest.xml
+          sed -i 's/<manifest [^>]*>/&\n    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"\/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"\/>\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"\/>\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"\/>/' $MANIFEST
 
       - name: Install Dependencies
         run: flutter pub get
