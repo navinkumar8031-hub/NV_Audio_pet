@@ -30,7 +30,7 @@ jobs:
         run: |
           flutter create --platforms=android --org com.nvstudio --project-name nv_audio_pet .
 
-      - name: Configure Android, Permissions & Fix Plugin compileSdkVersion
+      - name: Configure Android Project & Permissions
         run: |
           # 1. Update Kotlin version
           if [ -f android/settings.gradle ]; then
@@ -46,51 +46,24 @@ jobs:
 
           # 3. Explicitly set compileSdk 34 and minSdk 21 in app build.gradle
           APP_GRADLE="android/app/build.gradle"
-          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34\n        compileSdkVersion 34/g' $APP_GRADLE || true
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 34/g' $APP_GRADLE || true
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' $APP_GRADLE || true
           sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 21/g' $APP_GRADLE || true
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' $APP_GRADLE || true
           sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 34/g' $APP_GRADLE || true
-
-          # 4. Global properties for Android build tools
-          echo "compileSdkVersion=34" >> android/gradle.properties
-          echo "targetSdkVersion=34" >> android/gradle.properties
-          echo "minSdkVersion=21" >> android/gradle.properties
-          echo "flutter.compileSdkVersion=34" >> android/gradle.properties
-          echo "flutter.minSdkVersion=21" >> android/gradle.properties
-          echo "flutter.targetSdkVersion=34" >> android/gradle.properties
-
-          # 5. Fix plugins compileSdkVersion without touching already evaluated :app
-          cat << 'EOF' >> android/build.gradle
-
-          allprojects {
-              ext {
-                  compileSdkVersion = 34
-                  targetSdkVersion = 34
-                  minSdkVersion = 21
-              }
-          }
-
-          subprojects { subproject ->
-              if (subproject.name != "app") {
-                  subproject.plugins.withId("com.android.library") {
-                      subproject.android {
-                          compileSdkVersion 34
-                      }
-                  }
-                  if (!subproject.state.executed) {
-                      subproject.afterEvaluate {
-                          if (subproject.hasProperty("android")) {
-                              subproject.android {
-                                  compileSdkVersion 34
-                              }
-                          }
-                      }
-                  }
-              }
-          }
-          EOF
+          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/g' $APP_GRADLE || true
 
       - name: Install Dependencies
         run: flutter pub get
+
+      - name: Patch Plugin build.gradle Files (Fix flutter_blue_plus compileSdk)
+        run: |
+          PUB_DIR="${PUB_CACHE:-$HOME/.pub-cache}"
+          echo "Patching pub dependencies in $PUB_DIR..."
+          find "$PUB_DIR" -name "build.gradle" -type f -exec sed -i 's/android\.flutter\.compileSdkVersion/34/g' {} + || true
+          find "$PUB_DIR" -name "build.gradle" -type f -exec sed -i 's/flutter\.compileSdkVersion/34/g' {} + || true
+          find "$PUB_DIR" -name "build.gradle" -type f -exec sed -i 's/flutter\.minSdkVersion/21/g' {} + || true
+          find "$PUB_DIR" -name "build.gradle" -type f -exec sed -i 's/flutter\.targetSdkVersion/34/g' {} + || true
 
       - name: Build APK
         run: flutter build apk --release
